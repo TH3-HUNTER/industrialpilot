@@ -1,8 +1,3 @@
-"""
-IndustrialPilot — Realistic Industrial Remediation Tools
-Every action here maps to a real industrial protocol.
-The agent can only do what a real SCADA/DCS system would allow remotely.
-"""
 import os, uuid, httpx
 from datetime import datetime
 from dotenv import load_dotenv
