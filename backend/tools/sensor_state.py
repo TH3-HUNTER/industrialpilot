@@ -1,7 +1,3 @@
-"""
-Shared in-memory sensor state — SINGLE SOURCE OF TRUTH.
-The server owns this. Frontend reads/writes via API only — never assumes local state is correct.
-"""
 import random
 
 LIVE_STATE = {
