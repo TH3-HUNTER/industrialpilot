@@ -1,7 +1,3 @@
-"""
-IndustrialPilot — Qwen Agent
-Autonomous reasoning engine for factory incident response.
-"""
 import os
 import json
 import uuid
