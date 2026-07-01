@@ -144,7 +144,7 @@ The app will be reachable at `http://8.216.39.121:8000`.
 
 This project is deployed on Alibaba Cloud ECS (Japan/Tokyo region).
 
-![Alibaba Cloud ECS Instance](Alibaba.png)
+![Alibaba Cloud ECS Instance](Alibaba.PNG)
 
 ## 📄 License
 
