@@ -1,0 +1,1289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>IndustrialPilot — Control Center</title>
+<style>
+:root{
+  --bg:#070b14;--surface:#0f1623;--surface2:#162033;--surface3:#1c2a40;
+  --border:#1e2d45;--border2:#243550;
+  --accent:#3b82f6;--cyan:#06b6d4;--purple:#a855f7;
+  --red:#ef4444;--orange:#f97316;--yellow:#eab308;--green:#22c55e;
+  --text:#e2e8f0;--muted:#64748b;--muted2:#94a3b8;
+  --mono:'Courier New',monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+
+/* HEADER */
+header{background:var(--surface);border-bottom:1px solid var(--border);padding:0 20px;display:flex;align-items:center;justify-content:space-between;height:58px;flex-shrink:0}
+.logo{display:flex;align-items:center;gap:10px}
+.logo-icon{width:32px;height:32px;background:linear-gradient(135deg,var(--accent),var(--cyan));border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:16px}
+.logo-name{font-size:16px;font-weight:700;letter-spacing:-.3px}
+.logo-sub{font-size:10px;color:var(--muted2)}
+.hstats{display:flex;align-items:center;gap:20px}
+.hstat{text-align:center;line-height:1}
+.hstat-val{font-size:20px;font-weight:700}
+.hstat-lbl{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px}
+.ws-pill{display:flex;align-items:center;gap:5px;background:var(--surface2);padding:4px 12px;border-radius:20px;border:1px solid var(--border);margin-left:8px}
+.ws-dot{width:7px;height:7px;border-radius:50%;background:var(--red)}
+.ws-dot.on{background:var(--green);animation:blink 2s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+.ws-txt{font-size:11px;color:var(--muted2)}
+
+/* TABS */
+.tabs{display:flex;background:var(--surface);border-bottom:1px solid var(--border);padding:0 20px;flex-shrink:0}
+.tab{padding:10px 16px;font-size:12px;font-weight:600;color:var(--muted2);cursor:pointer;border-bottom:2px solid transparent;transition:all .15s;user-select:none;white-space:nowrap}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+
+/* PAGES */
+.page{display:none;flex:1;overflow:hidden}
+.page.active{display:flex}
+
+/* ─── DASHBOARD ─── */
+.dash-layout{display:grid;grid-template-columns:270px 1fr 310px;flex:1;overflow:hidden}
+.dcol{display:flex;flex-direction:column;overflow:hidden;border-right:1px solid var(--border)}
+.dcol:last-child{border-right:none}
+
+/* Controls */
+.ctrl{padding:14px;overflow-y:auto;display:flex;flex-direction:column;gap:12px}
+.sec-title{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px;padding-bottom:5px;border-bottom:1px solid var(--border)}
+.field{display:flex;flex-direction:column;gap:4px;margin-bottom:8px}
+.field label{font-size:11px;color:var(--muted2)}
+select,input{background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:6px;font-size:12px;width:100%;outline:none}
+select:focus,input:focus{border-color:var(--accent)}
+.btn{padding:8px 12px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;width:100%;margin-bottom:5px;text-align:center}
+.btn-blue{background:var(--accent);color:#fff}.btn-blue:hover{background:#2563eb}
+.btn-ghost{background:transparent;color:var(--muted2);border:1px solid var(--border)}.btn-ghost:hover{background:var(--surface2);color:var(--text)}
+
+/* Sensor mini grid */
+.sg{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.sgc{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px;cursor:pointer;transition:all .15s}
+.sgc:hover{border-color:var(--accent)}
+.sgc-id{font-size:10px;font-family:var(--mono);color:var(--accent);font-weight:700}
+.sgc-type{font-size:9px;color:var(--muted2);margin:1px 0}
+.sgc-st{display:flex;align-items:center;gap:3px;margin-top:4px}
+.sgc-dot{width:6px;height:6px;border-radius:50%}
+
+/* Panel headers */
+.ph{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.ph-title{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+
+/* Incident list */
+.inc-scroll{flex:1;overflow-y:auto}
+.ii{padding:11px 14px;border-bottom:1px solid var(--border);cursor:pointer;transition:background .1s}
+.ii:hover{background:var(--surface2)}
+.ii.sel{background:rgba(59,130,246,.07);border-left:2px solid var(--accent)}
+.ii-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:3px}
+.ii-id{font-size:10px;font-family:var(--mono);color:var(--accent)}
+.ii-type{font-size:12px;font-weight:600;margin-bottom:2px}
+.ii-meta{font-size:10px;color:var(--muted2)}
+.ii-time{font-size:10px;color:var(--muted);margin-top:2px}
+
+/* ─── AGENT LOG — bigger, cleaner ─── */
+.log-box{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:6px}
+.le{display:flex;flex-direction:column;gap:2px;padding:7px 10px;border-radius:6px;border-left:3px solid transparent}
+.le-header{display:flex;align-items:center;gap:8px}
+.le-time{font-size:10px;color:var(--muted);font-family:var(--mono);flex-shrink:0}
+.le-tag{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;padding:1px 6px;border-radius:3px;flex-shrink:0}
+.le-id{font-size:10px;color:var(--muted);font-family:var(--mono)}
+.le-msg{font-size:12.5px;color:var(--muted2);line-height:1.5;padding-left:2px;word-break:break-word}
+/* color themes per type */
+.le-system{border-left-color:var(--border)}
+.le-system .le-tag{background:rgba(100,116,139,.15);color:var(--muted2)}
+.le-sim{border-left-color:var(--cyan);background:rgba(6,182,212,.03)}
+.le-sim .le-tag{background:rgba(6,182,212,.15);color:var(--cyan)}
+.le-sim .le-msg{color:var(--cyan)}
+.le-start{border-left-color:var(--accent);background:rgba(59,130,246,.04)}
+.le-start .le-tag{background:rgba(59,130,246,.15);color:var(--accent)}
+.le-start .le-msg{color:#93c5fd}
+.le-think{border-left-color:var(--purple);background:rgba(168,85,247,.03)}
+.le-think .le-tag{background:rgba(168,85,247,.15);color:var(--purple)}
+.le-think .le-msg{color:#d8b4fe}
+.le-tool{border-left-color:var(--yellow);background:rgba(234,179,8,.03)}
+.le-tool .le-tag{background:rgba(234,179,8,.15);color:var(--yellow)}
+.le-tool .le-msg{color:#fde68a}
+.le-result{border-left-color:var(--green);background:rgba(34,197,94,.03)}
+.le-result .le-tag{background:rgba(34,197,94,.15);color:var(--green)}
+.le-result .le-msg{color:#86efac}
+.le-reason{border-left-color:#a855f7;background:rgba(168,85,247,.04)}
+.le-reason .le-tag{background:rgba(168,85,247,.2);color:#d8b4fe}
+.le-reason .le-msg{color:#e9d5ff;font-style:italic}
+.le-done{border-left-color:var(--green);background:rgba(34,197,94,.06)}
+.le-done .le-tag{background:rgba(34,197,94,.2);color:var(--green)}
+.le-done .le-msg{color:var(--green);font-weight:600}
+.le-esc{border-left-color:var(--red);background:rgba(239,68,68,.06)}
+.le-esc .le-tag{background:rgba(239,68,68,.2);color:var(--red)}
+.le-esc .le-msg{color:#fca5a5;font-weight:600}
+.le-err{border-left-color:var(--orange);background:rgba(249,115,22,.06)}
+.le-err .le-tag{background:rgba(249,115,22,.2);color:var(--orange)}
+.le-err .le-msg{color:#fdba74}
+.le-op{border-left-color:var(--cyan);background:rgba(6,182,212,.05)}
+.le-op .le-tag{background:rgba(6,182,212,.15);color:var(--cyan)}
+.le-op .le-msg{color:var(--cyan)}
+
+/* Detail panel */
+.ds{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:12px}
+.dg{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.dr{display:flex;flex-direction:column;gap:3px}
+.dl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+.dv{font-size:13px;font-weight:600}
+.conf-bar{background:var(--surface2);border-radius:3px;height:6px;overflow:hidden;margin-top:3px}
+.conf-fill{height:100%;border-radius:3px;transition:width .5s}
+.action-row{display:flex;align-items:start;gap:6px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px}
+.op-box{background:rgba(249,115,22,.06);border:1px solid rgba(249,115,22,.25);border-radius:7px;padding:12px}
+.op-h{font-size:12px;font-weight:700;color:var(--orange);margin-bottom:6px}
+.op-btns{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.report-pre{background:var(--surface2);border-radius:6px;padding:10px;font-size:11px;color:var(--muted2);line-height:1.6;white-space:pre-wrap;font-family:var(--mono);max-height:180px;overflow-y:auto}
+
+/* Badges */
+.b{padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;display:inline-flex;align-items:center;letter-spacing:.2px}
+.b-critical{background:rgba(239,68,68,.15);color:var(--red)}
+.b-high{background:rgba(249,115,22,.15);color:var(--orange)}
+.b-medium{background:rgba(234,179,8,.15);color:var(--yellow)}
+.b-low{background:rgba(34,197,94,.1);color:var(--green)}
+.b-resolved{background:rgba(34,197,94,.15);color:var(--green)}
+.b-operator_resolved{background:rgba(6,182,212,.15);color:var(--cyan)}
+.b-escalated{background:rgba(239,68,68,.12);color:var(--red)}
+.b-operator_review{background:rgba(249,115,22,.12);color:var(--orange)}
+.b-analyzing{background:rgba(59,130,246,.12);color:var(--accent)}
+.b-error{background:rgba(148,163,184,.08);color:var(--muted2)}
+
+/* ─── SENSOR STATUS PAGE ─── */
+.sensors-grid{flex:1;overflow-y:auto;padding:20px;display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px;align-content:start}
+.sb{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;display:flex;flex-direction:column;gap:10px}
+.sb-head{display:flex;justify-content:space-between;align-items:start}
+.sb-id{font-size:15px;font-weight:700;font-family:var(--mono);color:var(--accent)}
+.sb-name{font-size:12px;color:var(--muted2);margin-top:1px}
+.sb-loc{font-size:11px;color:var(--muted)}
+.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.met{background:var(--surface2);border-radius:6px;padding:8px;text-align:center}
+.met-val{font-size:17px;font-weight:700;font-family:var(--mono)}
+.met-lbl{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.3px;margin-top:2px}
+.met.ok .met-val{color:var(--green)}
+.met.warn .met-val{color:var(--yellow)}
+.met.crit .met-val{color:var(--red)}
+.sb-btns{display:flex;gap:6px}
+
+/* ─── ALL INCIDENTS TABLE ─── */
+.inc-page{flex:1;overflow-y:auto;padding:0}
+.inc-table{width:100%;border-collapse:collapse}
+.inc-table th{text-align:left;padding:10px 14px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface)}
+.inc-table td{padding:10px 14px;font-size:12px;border-bottom:1px solid var(--border)}
+.inc-table tr:hover td{background:var(--surface2);cursor:pointer}
+
+/* ─── EQUIPMENT REFERENCE PAGE ─── */
+.eq-page{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:16px}
+.eq-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+.eq-header{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--surface2)}
+.eq-id{font-size:15px;font-weight:700;font-family:var(--mono);color:var(--accent)}
+.eq-fullname{font-size:14px;font-weight:600;color:var(--text)}
+.eq-type{font-size:11px;color:var(--muted2)}
+.eq-body{padding:16px 18px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+.eq-section h4{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px;padding-bottom:5px;border-bottom:1px solid var(--border)}
+.eq-row{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid rgba(30,45,69,.5);font-size:12px}
+.eq-row:last-child{border-bottom:none}
+.eq-label{color:var(--muted2)}
+.eq-val{font-weight:600;color:var(--text);font-family:var(--mono)}
+.eq-val.warn{color:var(--orange)}
+.eq-val.ok{color:var(--green)}
+.fault-chip{display:inline-flex;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600;margin:2px;background:rgba(239,68,68,.1);color:var(--red)}
+
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+
+/* ─── SENSOR SLIDERS ─── */
+.slider-metric{background:var(--surface2);border-radius:8px;padding:10px 12px;border:1px solid var(--border)}
+.slider-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.slider-label{font-size:11px;font-weight:600;color:var(--muted2)}
+.slider-value{font-size:14px;font-weight:700;font-family:var(--mono)}
+.slider-value.ok{color:var(--green)}
+.slider-value.warn{color:var(--yellow)}
+.slider-value.crit{color:var(--red)}
+.slider-track{position:relative;height:20px;display:flex;align-items:center}
+.slider-bg{position:absolute;width:100%;height:6px;border-radius:3px;background:linear-gradient(to right,var(--green) 0%,var(--green) var(--ok-pct),var(--yellow) var(--ok-pct),var(--yellow) var(--warn-pct),var(--red) var(--warn-pct),var(--red) 100%)}
+input[type=range].srange{width:100%;-webkit-appearance:none;appearance:none;background:transparent;position:relative;z-index:2}
+input[type=range].srange::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:#fff;border:3px solid var(--accent);cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.4)}
+input[type=range].srange::-webkit-slider-runnable-track{height:6px;border-radius:3px;background:transparent}
+.thresh-line{position:absolute;width:2px;background:var(--red);height:14px;border-radius:1px;z-index:1;top:3px}
+.thresh-label{position:absolute;font-size:9px;color:var(--red);top:-14px;transform:translateX(-50%)}
+.slider-meta{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:2px}
+.pulse-fix{animation:fix-flash 1.5s ease-out}
+@keyframes fix-flash{0%{background:rgba(34,197,94,.3)}100%{background:var(--surface2)}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <img src="IndustrialPilot_logo.png" alt="IndustrialPilot" style="height:58px;width:58px;object-fit:contain;border-radius:8px;">
+    <div>
+      <div class="logo-name">IndustrialPilot</div>
+      <div class="logo-sub">Autonomous Factory Incident Response · Powered by Qwen AI</div>
+    </div>
+  </div>
+  <div class="hstats">
+    <div class="hstat"><div class="hstat-val" style="color:var(--accent)" id="hTotal">0</div><div class="hstat-lbl">Total</div></div>
+    <div class="hstat"><div class="hstat-val" style="color:var(--green)" id="hAuto">0</div><div class="hstat-lbl">Auto-Resolved</div></div>
+    <div class="hstat"><div class="hstat-val" style="color:var(--cyan)" id="hOpRes">0</div><div class="hstat-lbl">Op-Resolved</div></div>
+    <div class="hstat"><div class="hstat-val" style="color:var(--red)" id="hEsc">0</div><div class="hstat-lbl">Escalated</div></div>
+    <div class="hstat"><div class="hstat-val" style="color:var(--yellow)" id="hRate">—</div><div class="hstat-lbl">Auto Rate</div></div>
+    <div class="ws-pill"><div class="ws-dot" id="wsDot"></div><span class="ws-txt" id="wsLbl">Connecting...</span></div>
+  </div>
+</header>
+
+<div class="tabs">
+  <div class="tab active" onclick="switchTab('dash',this)">🏭 Live Dashboard</div>
+  <div class="tab" onclick="switchTab('sensors',this)">📡 Sensor Status</div>
+  <div class="tab" onclick="switchTab('incidents',this)">📋 All Incidents</div>
+  <div class="tab" onclick="switchTab('equipment',this)">🔩 Equipment Reference</div>
+  <div class="tab" onclick="switchTab('settings',this)">⚙️ Settings</div>
+</div>
+
+<!-- ══ DASHBOARD ══ -->
+<div class="page active" id="page-dash">
+<div class="dash-layout">
+
+  <!-- LEFT: CONTROLS -->
+  <div class="dcol">
+    <div class="ctrl">
+      <div>
+        <div class="sec-title">🎮 Simulate Alert</div>
+        <div class="field"><label>Sensor</label>
+          <select id="simSensor">
+            <option value="">🎲 Random</option>
+            <option value="MOTOR-A1">MOTOR-A1 · Production Line 1</option>
+            <option value="MOTOR-B2">MOTOR-B2 · Production Line 2</option>
+            <option value="MOTOR-C3">MOTOR-C3 · Production Line 3</option>
+            <option value="PUMP-D1">PUMP-D1 · Cooling System</option>
+            <option value="PUMP-E2">PUMP-E2 · Hydraulics</option>
+            <option value="COMP-F1">COMP-F1 · Air Supply</option>
+            <option value="CONV-G1">CONV-G1 · Assembly Line</option>
+            <option value="BOIL-H1">BOIL-H1 · Steam Boiler</option>
+          </select>
+        </div>
+        <div class="field"><label>Alert Type</label>
+          <select id="simAlertType">
+            <option value="">Auto (realistic)</option>
+            <optgroup label="── Thermal ──">
+              <option value="OVERTEMPERATURE">🌡️ Overtemperature</option>
+            </optgroup>
+            <optgroup label="── Mechanical ──">
+              <option value="EXCESSIVE_VIBRATION">📳 Excessive Vibration</option>
+              <option value="BEARING_FAULT">⚙️ Bearing Fault</option>
+              <option value="BELT_SLIP">🔄 Belt Slip</option>
+              <option value="UNDERSPEED">🐢 Underspeed</option>
+            </optgroup>
+            <optgroup label="── Electrical ──">
+              <option value="OVERCURRENT">⚡ Overcurrent</option>
+              <option value="INSULATION_FAULT">🔌 Insulation Fault</option>
+            </optgroup>
+            <optgroup label="── Pressure / Flow ──">
+              <option value="HIGH_PRESSURE">💨 High Pressure</option>
+              <option value="OVERPRESSURE">🔴 Overpressure</option>
+              <option value="LOW_FLOW_RATE">💧 Low Flow Rate</option>
+              <option value="LOW_WATER_FLOW">🚿 Low Water Flow</option>
+              <option value="OIL_PRESSURE_LOW">🛢️ Oil Pressure Low</option>
+              <option value="CAVITATION">🌀 Cavitation</option>
+            </optgroup>
+            <optgroup label="── Critical ──">
+              <option value="FLAME_FAILURE">🔥 Flame Failure</option>
+            </optgroup>
+          </select>
+        </div>
+        <div class="field"><label>Severity</label>
+          <select id="simSeverity">
+            <option value="">Auto-detect</option>
+            <option value="medium">🟡 Medium</option>
+            <option value="high">🟠 High</option>
+            <option value="critical">🔴 Critical</option>
+          </select>
+        </div>
+        <button class="btn btn-blue" onclick="fireAlert()">⚡ Fire Alert</button>
+
+      </div>
+
+      <div>
+        <div class="sec-title">🎚️ Live Sensor Controls</div>
+
+        <!-- MODE SWITCH -->
+        <div style="display:flex;align-items:center;justify-content:space-between;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:10px">
+          <div>
+            <div style="font-size:12px;font-weight:600;color:var(--text)" id="modeLabel">📡 Auto Mode</div>
+            <div style="font-size:10px;color:var(--muted)" id="modeDesc">Agent reads live simulated values</div>
+          </div>
+          <label style="position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0">
+            <input type="checkbox" id="modeToggle" onchange="onModeSwitch(this.checked)" style="opacity:0;width:0;height:0">
+            <span style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:var(--accent);border-radius:24px;transition:.3s" id="modeThumb">
+              <span style="position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:white;border-radius:50%;transition:.3s" id="modeKnob"></span>
+            </span>
+          </label>
+        </div>
+
+        <!-- SENSOR SELECTOR -->
+        <div class="field">
+          <label>Selected Sensor</label>
+          <select id="sliderSensor" onchange="onSensorSelect(this.value)">
+            <option value="MOTOR-A1">MOTOR-A1 · Production Line 1</option>
+            <option value="MOTOR-B2">MOTOR-B2 · Production Line 2</option>
+            <option value="MOTOR-C3">MOTOR-C3 · Production Line 3</option>
+            <option value="PUMP-D1">PUMP-D1 · Cooling System</option>
+            <option value="PUMP-E2">PUMP-E2 · Hydraulics</option>
+            <option value="COMP-F1">COMP-F1 · Air Supply</option>
+            <option value="CONV-G1">CONV-G1 · Assembly Line</option>
+            <option value="BOIL-H1">BOIL-H1 · Steam Boiler</option>
+          </select>
+        </div>
+
+        <!-- SLIDERS (only active in manual mode) -->
+        <div id="sliderPanel" style="display:flex;flex-direction:column;gap:10px"></div>
+        <button class="btn btn-blue" style="margin-top:8px" onclick="fireFromState()">⚡ Fire Alert from Current Readings</button>
+        <div id="sliderInfo" style="font-size:10px;color:var(--muted);margin-top:4px;line-height:1.4"></div>
+      </div>
+
+      <div>
+        <div class="sec-title">🏭 Sensor Grid</div>
+        <div class="sg" id="sensorGrid">Loading...</div>
+      </div>
+
+      <div>
+        <button onclick="clearAllData()" style="width:100%;padding:8px;background:rgba(239,68,68,.1);color:var(--red);border:1px solid rgba(239,68,68,.25);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">🗑️ Clear All Data</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MIDDLE: INCIDENTS + LOG -->
+  <div class="dcol" style="display:grid;grid-template-rows:1fr 1fr">
+
+    <!-- Incident list -->
+    <div style="display:flex;flex-direction:column;border-bottom:1px solid var(--border);overflow:hidden">
+      <!-- COUNTDOWN BAR -->
+      <div id="countdownBar" style="display:flex;align-items:center;gap:10px;padding:7px 14px;background:var(--surface2);border-bottom:1px solid var(--border);flex-shrink:0">
+        <span style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-weight:700">🔄 Next AI Scan</span>
+        <div style="flex:1;background:var(--border);border-radius:3px;height:5px;overflow:hidden">
+          <div id="countdownFill" style="height:100%;border-radius:3px;background:var(--green);transition:width 1s linear;width:100%"></div>
+        </div>
+        <span id="countdownNum" style="font-size:12px;font-weight:700;color:var(--green);font-family:var(--mono);min-width:28px;text-align:right">15s</span>
+      </div>
+      <div class="ph">
+        <span class="ph-title">📋 Incidents</span>
+        <div style="display:flex;gap:6px;align-items:center">
+          <select id="filterStatus" onchange="filterIncidents()" style="width:auto;font-size:11px;padding:3px 7px">
+            <option value="">All</option>
+            <option value="resolved">Auto-Resolved</option>
+            <option value="operator_resolved">Op-Resolved</option>
+            <option value="escalated">Escalated</option>
+            <option value="analyzing">Analyzing</option>
+          </select>
+          <button onclick="loadIncidents()" style="background:var(--surface2);border:1px solid var(--border);color:var(--muted2);padding:3px 8px;border-radius:5px;font-size:11px;cursor:pointer">↺</button>
+        </div>
+      </div>
+      <div class="inc-scroll" id="incList">
+        <div style="padding:30px;text-align:center;color:var(--muted);font-size:12px">📭 No incidents yet</div>
+      </div>
+    </div>
+
+    <!-- Agent log -->
+    <div style="display:flex;flex-direction:column;overflow:hidden">
+      <div class="ph">
+        <span class="ph-title">🤖 Live Agent Log</span>
+        <button onclick="clearLog()" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:3px 8px;border-radius:5px;font-size:11px;cursor:pointer">Clear</button>
+      </div>
+      <div class="log-box" id="logBox">
+        <div class="le le-system">
+          <div class="le-header"><span class="le-time">--:--:--</span><span class="le-tag">System</span></div>
+          <div class="le-msg">IndustrialPilot ready. Qwen AI agent standing by...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: DETAIL -->
+  <div class="dcol" style="border-right:none">
+    <div class="ph">
+      <span class="ph-title">📊 Incident Detail</span>
+      <span id="detailBadge" class="b" style="display:none"></span>
+    </div>
+    <div class="ds" id="detailPanel">
+      <div style="padding:50px 16px;text-align:center;color:var(--muted);font-size:12px">🔍<br><br>Select an incident<br>to view details</div>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<!-- ══ SENSOR STATUS ══ -->
+<div class="page" id="page-sensors">
+  <div class="sensors-grid" id="sensorsPage">Loading...</div>
+</div>
+
+<!-- ══ ALL INCIDENTS ══ -->
+<div class="page" id="page-incidents" style="flex-direction:column">
+  <div style="padding:12px 20px;border-bottom:1px solid var(--border);display:flex;gap:10px;flex-shrink:0;align-items:center">
+    <select id="iFilterStatus" onchange="renderIncTable()" style="width:160px">
+      <option value="">All Status</option>
+      <option value="resolved">Auto-Resolved</option>
+      <option value="operator_resolved">Operator-Resolved</option>
+      <option value="escalated">Escalated</option>
+      <option value="error">Error</option>
+    </select>
+    <select id="iFilterSev" onchange="renderIncTable()" style="width:140px">
+      <option value="">All Severity</option>
+      <option value="critical">Critical</option>
+      <option value="high">High</option>
+      <option value="medium">Medium</option>
+    </select>
+    <button onclick="loadIncidents();renderIncTable()" style="background:var(--accent);color:#fff;border:none;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">↺ Refresh</button>
+    <button onclick="downloadCSV()" style="background:var(--green);color:#fff;border:none;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">⬇ Download Full Report (CSV)</button>
+    <span id="incCount" style="font-size:12px;color:var(--muted);margin-left:auto"></span>
+  </div>
+  <div class="inc-page">
+    <table class="inc-table">
+      <thead><tr>
+        <th>Alert ID</th><th>Sensor</th><th>Type</th>
+        <th>Severity</th><th>Status</th><th>Confidence</th><th>Time</th><th></th>
+      </tr></thead>
+      <tbody id="incTableBody"><tr><td colspan="8" style="text-align:center;padding:40px;color:var(--muted)">No incidents yet</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ══ EQUIPMENT REFERENCE ══ -->
+<div class="page" id="page-equipment" style="flex-direction:column">
+  <div id="eqPage" class="eq-page"></div>
+</div>
+
+<!-- ══ SETTINGS ══ -->
+<div class="page" id="page-settings" style="flex-direction:column">
+  <div style="flex:1;overflow-y:auto;padding:24px;max-width:640px">
+
+    <div style="margin-bottom:28px">
+      <div style="font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:4px">🚨 Technician Notifications</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:14px">When the AI cannot fix a problem itself (mechanical fault, electrical risk, low confidence, or emergency shutdown), it sends an alert to these emails.</div>
+
+      <label style="font-size:12px;color:var(--muted2);display:block;margin-bottom:6px">Notification Emails (comma-separated)</label>
+      <textarea id="settingsEmails" rows="2" style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:7px;font-size:13px;resize:vertical;font-family:var(--mono)" placeholder="technician@factory.com, backup@factory.com"></textarea>
+
+      <label style="font-size:12px;color:var(--muted2);display:block;margin:14px 0 6px">Slack Webhook URL (optional)</label>
+      <input id="settingsSlack" type="text" style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:7px;font-size:13px;font-family:var(--mono)" placeholder="https://hooks.slack.com/services/...">
+
+      <button onclick="saveSettings()" style="margin-top:14px;background:var(--accent);color:#fff;border:none;padding:9px 18px;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer">💾 Save Notification Settings</button>
+      <span id="settingsSaveMsg" style="margin-left:12px;font-size:12px;color:var(--green)"></span>
+    </div>
+
+    <div style="border-top:1px solid var(--border);padding-top:24px;margin-bottom:28px">
+      <div style="font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:14px">🎯 Agent Decision Threshold</div>
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:13px;color:var(--text)">Confidence threshold</span>
+          <span id="settingsConfVal" style="font-size:16px;font-weight:700;color:var(--accent)">80%</span>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.5">
+          Below this confidence, the agent always escalates instead of acting autonomously — even if it called a remediation tool.
+          Set in the server's <code style="color:var(--cyan)">.env</code> file (<code style="color:var(--cyan)">CONFIDENCE_THRESHOLD</code>), shown here read-only for reference.
+        </div>
+      </div>
+    </div>
+
+    <div style="border-top:1px solid var(--border);padding-top:24px">
+      <div style="font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:14px">📊 System Info</div>
+      <div id="settingsSystemInfo" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px;font-size:12px;color:var(--muted2);line-height:1.8"></div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────
+let ws, selectedId=null, allIncidents=[], curTab='dash';
+
+// ── Equipment reference data ───────────────────────────────────────────
+const EQUIPMENT = {
+  'MOTOR-A1':{
+    fullName:'AC Induction Motor — Production Line 1',type:'Electric Motor',zone:'Zone A',
+    specs:{rated_power:'75 kW',voltage:'400 V AC',rated_current:'138 A',speed:'1480 RPM',efficiency:'IE3 (94.5%)'},
+    normal:{temp:'55–75 °C',vibration:'0.2–0.6 mm/s',current:'38–48 A',speed:'1450–1510 RPM'},
+    thresholds:{max_temp:'85 °C',max_vibration:'7.5 mm/s',max_current:'45 A',min_speed:'1400 RPM'},
+    faults:['OVERTEMPERATURE','EXCESSIVE_VIBRATION','OVERCURRENT','BEARING_FAULT','INSULATION_FAULT'],
+    maintenance:'Every 3 months — lubrication, alignment check, insulation test',
+  },
+  'MOTOR-B2':{
+    fullName:'AC Induction Motor — Production Line 2',type:'Electric Motor',zone:'Zone B',
+    specs:{rated_power:'75 kW',voltage:'400 V AC',rated_current:'138 A',speed:'1480 RPM',efficiency:'IE3 (94.5%)'},
+    normal:{temp:'55–75 °C',vibration:'0.2–0.6 mm/s',current:'38–48 A',speed:'1450–1510 RPM'},
+    thresholds:{max_temp:'85 °C',max_vibration:'7.5 mm/s',max_current:'45 A',min_speed:'1400 RPM'},
+    faults:['OVERTEMPERATURE','EXCESSIVE_VIBRATION','OVERCURRENT','BEARING_FAULT','INSULATION_FAULT'],
+    maintenance:'Every 3 months — lubrication, alignment check, insulation test',
+  },
+  'MOTOR-C3':{
+    fullName:'AC Induction Motor — Production Line 3',type:'Electric Motor',zone:'Zone C',
+    specs:{rated_power:'55 kW',voltage:'400 V AC',rated_current:'103 A',speed:'1480 RPM',efficiency:'IE3 (94.0%)'},
+    normal:{temp:'55–75 °C',vibration:'0.2–0.6 mm/s',current:'38–48 A',speed:'1450–1510 RPM'},
+    thresholds:{max_temp:'85 °C',max_vibration:'7.5 mm/s',max_current:'45 A',min_speed:'1400 RPM'},
+    faults:['OVERTEMPERATURE','EXCESSIVE_VIBRATION','OVERCURRENT','BEARING_FAULT','INSULATION_FAULT'],
+    maintenance:'Every 3 months — lubrication, alignment check, insulation test',
+  },
+  'PUMP-D1':{
+    fullName:'Centrifugal Cooling Water Pump',type:'Centrifugal Pump',zone:'Zone D — Cooling System',
+    specs:{rated_power:'22 kW',flow_rate:'0.05–0.12 m³/s',head:'35 m',impeller:'Bronze 280mm'},
+    normal:{temp:'40–60 °C',pressure:'4–8 bar',flow:'0.05–0.12 m³/s'},
+    thresholds:{max_temp:'70 °C',max_pressure:'12 bar',min_flow:'0.05 m³/s'},
+    faults:['HIGH_PRESSURE','LOW_FLOW_RATE','OVERTEMPERATURE','CAVITATION'],
+    maintenance:'Monthly — seal inspection, impeller check, alignment verification',
+  },
+  'PUMP-E2':{
+    fullName:'Hydraulic Gear Pump — Hydraulic Circuit',type:'Hydraulic Pump',zone:'Zone E — Hydraulics',
+    specs:{rated_power:'30 kW',flow_rate:'0.05–0.10 m³/s',max_pressure:'16 bar',displacement:'71 cc/rev'},
+    normal:{temp:'40–60 °C',pressure:'4–8 bar',flow:'0.05–0.10 m³/s'},
+    thresholds:{max_temp:'70 °C',max_pressure:'12 bar',min_flow:'0.05 m³/s'},
+    faults:['HIGH_PRESSURE','LOW_FLOW_RATE','OVERTEMPERATURE','CAVITATION'],
+    maintenance:'Monthly — oil change, filter replacement, pressure relief valve test',
+  },
+  'COMP-F1':{
+    fullName:'Rotary Screw Air Compressor',type:'Air Compressor',zone:'Zone F — Air Supply',
+    specs:{rated_power:'90 kW',output_pressure:'8–13 bar',capacity:'16 m³/min',cooling:'Air-cooled'},
+    normal:{temp:'60–80 °C',pressure:'8–10 bar (delivery)',vibration:'0.1–0.4 mm/s'},
+    thresholds:{max_temp:'95 °C',max_pressure:'13 bar / 150 psi',max_vibration:'5.0 mm/s'},
+    faults:['HIGH_PRESSURE','OVERTEMPERATURE','EXCESSIVE_VIBRATION','OIL_PRESSURE_LOW'],
+    maintenance:'Every 2 months — oil filter, air filter, belt tension, safety valve test',
+  },
+  'CONV-G1':{
+    fullName:'Belt Conveyor System — Assembly Line',type:'Belt Conveyor',zone:'Zone G — Assembly Line',
+    specs:{belt_width:'800 mm',belt_speed:'1.5–2.5 m/s',max_load:'500 kg/m',drive_power:'15 kW'},
+    normal:{temp:'35–55 °C',speed:'1.5–2.5 m/s',current:'20–30 A'},
+    thresholds:{max_temp:'60 °C',min_speed:'1.2 m/s',max_current:'30 A'},
+    faults:['UNDERSPEED','OVERTEMPERATURE','OVERCURRENT','BELT_SLIP'],
+    maintenance:'Weekly — belt tension, roller inspection, tracking adjustment',
+  },
+  'BOIL-H1':{
+    fullName:'Fire-Tube Steam Boiler',type:'Steam Boiler',zone:'Zone H — Steam Plant',
+    specs:{capacity:'5,000 kg/h steam',working_pressure:'16 bar',temperature:'204 °C',fuel:'Natural Gas'},
+    normal:{temp:'160–180 °C',pressure:'12–15 bar',flow:'0.05–0.10 m³/s'},
+    thresholds:{max_temp:'200 °C',max_pressure:'16 bar',min_flow:'0.04 m³/s'},
+    faults:['OVERPRESSURE','OVERTEMPERATURE','LOW_WATER_FLOW','FLAME_FAILURE'],
+    maintenance:'Monthly — water treatment test, safety valve test, burner inspection',
+  },
+};
+
+const SENSORS_META = {
+  'MOTOR-A1':{metrics:['temp_c','vib_mm_s','current_a'],thresholds:[85,7.5,45],labels:['Temp °C','Vib mm/s','Current A']},
+  'MOTOR-B2':{metrics:['temp_c','vib_mm_s','current_a'],thresholds:[85,7.5,45],labels:['Temp °C','Vib mm/s','Current A']},
+  'MOTOR-C3':{metrics:['temp_c','vib_mm_s','current_a'],thresholds:[85,7.5,45],labels:['Temp °C','Vib mm/s','Current A']},
+  'PUMP-D1': {metrics:['temp_c','pressure_bar','flow_m3s'],thresholds:[70,12,0.05],labels:['Temp °C','Pressure bar','Flow m³/s']},
+  'PUMP-E2': {metrics:['temp_c','pressure_bar','flow_m3s'],thresholds:[70,12,0.05],labels:['Temp °C','Pressure bar','Flow m³/s']},
+  'COMP-F1': {metrics:['temp_c','pressure_psi','vib_mm_s'],thresholds:[95,150,5],labels:['Temp °C','Pressure psi','Vib mm/s']},
+  'CONV-G1': {metrics:['temp_c','speed_m_s','current_a'],thresholds:[60,1.2,30],labels:['Temp °C','Speed m/s','Current A']},
+  'BOIL-H1': {metrics:['temp_c','pressure_bar','flow_m3s'],thresholds:[180,16,0.08],labels:['Temp °C','Pressure bar','Flow m³/s']},
+};
+
+
+
+// ── WebSocket ──────────────────────────────────────────────────────────
+function connectWS(){
+  const proto=location.protocol==='https:'?'wss':'ws';
+  ws=new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen=()=>{document.getElementById('wsDot').className='ws-dot on';document.getElementById('wsLbl').textContent='Live';};
+  ws.onclose=()=>{document.getElementById('wsDot').className='ws-dot';document.getElementById('wsLbl').textContent='Reconnecting...';setTimeout(connectWS,2000);};
+  ws.onmessage=e=>onEvent(JSON.parse(e.data));
+}
+
+function onEvent(d){
+  const t=d.type||'', msg=d.message||'';
+  const clsMap={agent_start:'start',agent_thinking:'think',tool_call:'tool',tool_result:'result',
+    agent_reasoning:'reason',agent_complete:'done',agent_error:'err',operator_response:'op',simulated:'sim'};
+  const labelMap={agent_start:'Alert In',agent_thinking:'AI Thinking',tool_call:'Tool Call',tool_result:'Tool Done',
+    agent_reasoning:'AI Reasoning',agent_complete:'Completed',agent_error:'Error',operator_response:'Operator',simulated:'Simulated'};
+  addLog(clsMap[t]||'system', labelMap[t]||t.replace(/_/g,' '), msg, d.alert_id);
+  if(['agent_start','agent_complete','agent_error','operator_response'].includes(t)){loadIncidents();loadStats();}
+  if(selectedId&&d.alert_id===selectedId&&['agent_complete','operator_response'].includes(t)) setTimeout(()=>showDetail(selectedId),600);
+  if(t==='data_cleared') clearAllData && addLog('system','Server','Data cleared on server restart');
+}
+
+// ── Log ────────────────────────────────────────────────────────────────
+function addLog(cls,tag,msg,alertId){
+  const box=document.getElementById('logBox');
+  const t=new Date().toTimeString().slice(0,8);
+  const div=document.createElement('div');
+  div.className=`le le-${cls||'system'}`;
+  div.innerHTML=`
+    <div class="le-header">
+      <span class="le-time">${t}</span>
+      <span class="le-tag">${esc(tag)}</span>
+      ${alertId?`<span class="le-id">${alertId}</span>`:''}
+    </div>
+    <div class="le-msg">${esc(msg)}</div>`;
+  box.appendChild(div);
+  box.scrollTop=box.scrollHeight;
+  while(box.children.length>300) box.removeChild(box.firstChild);
+}
+function clearLog(){
+  document.getElementById('logBox').innerHTML=`<div class="le le-system"><div class="le-header"><span class="le-time">--:--:--</span><span class="le-tag">System</span></div><div class="le-msg">Log cleared.</div></div>`;
+}
+
+// ── Fire alerts ────────────────────────────────────────────────────────
+async function fireAlert(){
+  const sensor=document.getElementById('simSensor').value;
+  const atype=document.getElementById('simAlertType').value;
+  const sev=document.getElementById('simSeverity').value;
+  const p=new URLSearchParams();
+  if(sensor) p.set('sensor_id',sensor);
+  if(atype)  p.set('alert_type',atype);
+  if(sev)    p.set('severity',sev);
+  const r=await fetch('/api/alerts/simulate'+(p.toString()?'?'+p:''),{method:'POST'});
+  const d=await r.json();
+  const a=d.alert||{};
+  addLog('sim','Simulated',`${a.alert_type||atype||'random alert'} → ${a.sensor_id||sensor||'random'} [${a.severity||sev||'auto'}]`);
+}
+async function fireBurst(n){
+  addLog('sim','Burst',`Firing ${n} alerts in sequence...`);
+  for(let i=0;i<n;i++){await fireAlert();await sleep(700);}
+}
+
+// ── Data ───────────────────────────────────────────────────────────────
+async function loadIncidents(){
+  const r=await fetch('/api/incidents?limit=200');
+  allIncidents=(await r.json()).incidents||[];
+  filterIncidents();
+  if(curTab==='incidents') renderIncTable();
+}
+async function loadStats(){
+  const d=await (await fetch('/api/stats')).json();
+  document.getElementById('hTotal').textContent=d.total;
+  document.getElementById('hAuto').textContent=d.auto_resolved;
+  document.getElementById('hOpRes').textContent=d.operator_resolved||0;
+  document.getElementById('hEsc').textContent=d.escalated;
+  document.getElementById('hRate').textContent=d.total>0?d.automation_rate+'%':'—';
+}
+
+// ── Incident List ──────────────────────────────────────────────────────
+function filterIncidents(){
+  const f=document.getElementById('filterStatus')?.value||'';
+  renderList(f?allIncidents.filter(i=>i.status===f):allIncidents);
+}
+function renderList(incs){
+  const el=document.getElementById('incList');
+  if(!incs||!incs.length){el.innerHTML='<div style="padding:30px;text-align:center;color:var(--muted);font-size:12px">📭 No incidents yet</div>';return;}
+  el.innerHTML=incs.map(i=>`
+    <div class="ii ${selectedId===i.alert_id?'sel':''}" onclick="showDetail('${i.alert_id}')">
+      <div class="ii-top">
+        <span class="ii-id">${i.alert_id}</span>
+        <span class="b b-${i.status||'analyzing'}">${statusLabel(i.status)}</span>
+      </div>
+      <div class="ii-type">${i.alert_type||'—'}</div>
+      <div class="ii-meta">${i.sensor_id} · <span class="b b-${i.severity}" style="font-size:9px">${(i.severity||'').toUpperCase()}</span></div>
+      <div class="ii-time">${i.created_at?.slice(11,19)||''}</div>
+    </div>`).join('');
+}
+function statusLabel(s){
+  return {resolved:'AUTO-RESOLVED',operator_resolved:'OP-RESOLVED',escalated:'ESCALATED',
+    analyzing:'ANALYZING',error:'ERROR',operator_review:'IN REVIEW'}[s]||(s||'unknown').toUpperCase();
+}
+
+// ── Detail ─────────────────────────────────────────────────────────────
+async function showDetail(alertId){
+  selectedId=alertId;
+  filterIncidents();
+  const d=await(await fetch(`/api/incidents/${alertId}`)).json();
+  const inc=d.incident||{}, dec=d.decision||{}, rem=d.remediations||[], rep=d.report||{}, opr=d.operator_response||{};
+  const badge=document.getElementById('detailBadge');
+  badge.style.display='inline-flex';
+  badge.className=`b b-${inc.status||'analyzing'}`;
+  badge.textContent=statusLabel(inc.status);
+  const conf=parseFloat(dec.confidence||0);
+  const cc=conf>=.8?'var(--green)':conf>=.6?'var(--yellow)':'var(--red)';
+  let raw={};try{raw=JSON.parse(inc.raw_data||'{}');}catch(e){}
+  const ad=raw.data||{};
+  let rc='Analysis in progress...';
+  if(dec.reasoning){const m=dec.reasoning.match(/ROOT_CAUSE:\s*(.+)/);if(m)rc=m[1].trim();else if(dec.reasoning.length>10)rc=dec.reasoning.slice(0,200)+'...';}
+  // De-duplicate identical (tool, message) pairs and show a ×N count instead of repeating
+  const remSeen = new Map();
+  rem.forEach(r => {
+    let res={}; try{res=JSON.parse(r.tool_result||'{}');}catch(e){}
+    const msg = res.message || 'completed';
+    const key = r.tool_name + '|' + msg;
+    remSeen.set(key, (remSeen.get(key) || {tool:r.tool_name, msg, count:0}));
+    remSeen.get(key).count++;
+  });
+  const remsHtml = remSeen.size ? Array.from(remSeen.values()).map(r=>
+    `<div class="action-row"><span style="color:var(--green)">→</span><span style="flex:1;color:var(--muted2)"><strong>${r.tool}</strong>${r.count>1?` <span style="color:var(--muted)">×${r.count}</span>`:''}: ${r.msg}</span></div>`
+  ).join('') : '<div style="color:var(--muted);font-size:11px;padding:4px 0">No remediation actions logged</div>';
+
+  const isEscalated=dec.escalated==1;
+  const opResolved=inc.status==='operator_resolved'||inc.status==='operator_review';
+
+  document.getElementById('detailPanel').innerHTML=`
+    <div class="dg">
+      <div class="dr"><div class="dl">Alert ID</div><div class="dv" style="font-family:var(--mono);color:var(--accent);font-size:11px">${inc.alert_id||'—'}</div></div>
+      <div class="dr"><div class="dl">Sensor</div><div class="dv">${inc.sensor_id||'—'}</div></div>
+      <div class="dr"><div class="dl">Alert Type</div><div class="dv" style="font-size:12px">${inc.alert_type||'—'}</div></div>
+      <div class="dr"><div class="dl">Severity</div><div class="dv"><span class="b b-${inc.severity}">${(inc.severity||'').toUpperCase()}</span></div></div>
+      <div class="dr"><div class="dl">Reading</div><div class="dv">${ad.value||'—'} ${ad.unit||''}</div></div>
+      <div class="dr"><div class="dl">Threshold</div><div class="dv">${ad.threshold||'—'} ${ad.unit||''}</div></div>
+    </div>
+    <div class="dr"><div class="dl">Location</div><div class="dv" style="font-size:12px;font-weight:400">${ad.location||'—'}</div></div>
+    <div class="dr"><div class="dl">Root Cause</div><div class="dv" style="font-size:12px;font-weight:400;line-height:1.5;color:var(--muted2)">${esc(rc)}</div></div>
+    <div class="dr">
+      <div class="dl">Confidence — <span style="color:${cc}">${(conf*100).toFixed(0)}%</span> ${conf>=.8?'✅ Autonomous action':'⚠️ Escalated'}</div>
+      <div class="conf-bar"><div class="conf-fill" style="width:${conf*100}%;background:${cc}"></div></div>
+    </div>
+    <div class="dr"><div class="dl">Actions Taken (${remSeen.size})</div>${remsHtml}</div>
+
+    ${isEscalated && !opResolved ? `
+    <div class="op-box">
+      <div class="op-h">🔴 Human Decision Required</div>
+      <div style="font-size:11px;color:var(--muted2);margin-bottom:8px">Agent confidence ${(conf*100).toFixed(0)}% — below threshold. Your decision is needed.</div>
+      <textarea id="opNotes" style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:7px;border-radius:6px;font-size:12px;resize:none" rows="2" placeholder="Add notes for the audit log..."></textarea>
+      <div class="op-btns">
+        <button onclick="respond('${alertId}','approve')" style="background:var(--green);color:#fff;border:none;padding:6px 14px;border-radius:5px;font-size:12px;font-weight:600;cursor:pointer">✅ Approve & Resolve</button>
+        <button onclick="respond('${alertId}','manual_fix')" style="background:var(--accent);color:#fff;border:none;padding:6px 14px;border-radius:5px;font-size:12px;font-weight:600;cursor:pointer">🔧 Manual Fix</button>
+        <button onclick="respond('${alertId}','reject')" style="background:transparent;color:var(--muted2);border:1px solid var(--border);padding:6px 14px;border-radius:5px;font-size:12px;cursor:pointer">❌ Reject</button>
+      </div>
+    </div>` : isEscalated && opResolved ? `
+    <div style="background:rgba(6,182,212,.06);border:1px solid rgba(6,182,212,.2);border-radius:7px;padding:12px;font-size:12px">
+      ✅ <strong>Operator resolved</strong>: ${opr.decision||'—'}${opr.notes?' — '+opr.notes:''}
+    </div>` : ''}
+
+    ${rep.report_md?`<div class="dr"><div class="dl">Incident Report</div><div class="report-pre">${esc(rep.report_md.slice(0,800))}${rep.report_md.length>800?'\n...[truncated]':''}</div></div>`:''}`;
+}
+
+async function respond(alertId,decision){
+  const notes=document.getElementById('opNotes')?.value||'';
+  await fetch(`/api/incidents/${alertId}/operator-response`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({decision,notes})});
+  addLog('op','Operator',`${decision.toUpperCase()} on ${alertId}${notes?' — '+notes:''}`);
+  setTimeout(()=>showDetail(alertId),400);
+  loadStats();
+}
+
+// ── Sensor mini grid ───────────────────────────────────────────────────
+function renderSensorGrid(){
+  const el=document.getElementById('sensorGrid');
+  if(!el) return;
+  el.innerHTML=Object.keys(SENSORS_META).map(id=>{
+    // Always use sensorStateData for grid status (source of truth)
+    const state  = sensorStateData[id]||{};
+    const thresh = sensorThresholds[id]||{};
+    const warn   = Object.entries(state).some(([m,v])=>{
+      const t=thresh[m]; if(!t) return false;
+      return (m==='flow_m3s'||m==='speed_m_s')?v<t:v>t;
+    });
+    const col = warn?'var(--yellow)':'var(--green)';
+    return `<div class="sgc" onclick="document.getElementById('simSensor').value='${id}';document.getElementById('sliderSensor').value='${id}';onSensorSelect('${id}')">
+      <div class="sgc-id">${id}</div>
+      <div class="sgc-type">${EQUIPMENT[id]?.type||''}</div>
+      <div class="sgc-st"><div class="sgc-dot" style="background:${col}"></div><span style="font-size:9px;color:${col}">${warn?'WATCH':'OK'}</span></div>
+    </div>`;
+  }).join('');
+}
+
+// ── Sensors page ───────────────────────────────────────────────────────
+function renderSensorsPage(){
+  const el=document.getElementById('sensorsPage');
+  if(!el) return;
+  el.innerHTML=Object.keys(SENSORS_META).map(id=>{
+    const m    = SENSORS_META[id];
+    const eq   = EQUIPMENT[id]||{};
+    // sensorStateData is now the ONLY source of truth (server-authoritative, regardless of mode)
+    const state = sensorStateData[id] || {};
+    const thresh = sensorThresholds[id] || {};
+    const reads = m.metrics.map(metric => state[metric] ?? 0);
+    // Use the SAME threshold logic as the sliders (handles low-is-bad metrics like flow/speed correctly)
+    const warn  = m.metrics.some((metric,i) => {
+      const t = thresh[metric]; if (!t) return false;
+      const v = reads[i];
+      return (metric==='flow_m3s'||metric==='speed_m_s') ? v < t : v > t;
+    });
+    const mode  = sensorModes[id] || 'auto';
+    const metricsHtml = m.metrics.map((metric,i) => {
+      const v   = reads[i];
+      const t   = thresh[metric];
+      const cls = sliderColorClass(metric, v, t);
+      return `<div class="met ${cls}"><div class="met-val">${typeof v==='number'?v.toFixed(2):v}</div><div class="met-lbl">${m.labels[i]}</div></div>`;
+    }).join('');
+    return `<div class="sb">
+      <div class="sb-head">
+        <div><div class="sb-id">${id}</div><div class="sb-name">${eq.fullName||eq.type||id}</div><div class="sb-loc">${eq.zone||''}</div></div>
+        <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+          <span class="b ${warn?'b-high':'b-resolved'}">${warn?'⚠ WARNING':'✓ NORMAL'}</span>
+          <span style="font-size:9px;color:${mode==='manual'?'var(--orange)':'var(--accent)'}">${mode==='manual'?'🎚️ MANUAL':'📡 AUTO'}</span>
+        </div>
+      </div>
+      <div class="metrics">${metricsHtml}</div>
+      <div class="sb-btns">
+        <button onclick="document.getElementById('simSensor').value='${id}';document.getElementById('sliderSensor').value='${id}';onSensorSelect('${id}');switchTab('dash',document.querySelectorAll('.tab')[0])" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--muted2);padding:6px;border-radius:5px;font-size:11px;cursor:pointer">Target</button>
+        <button onclick="document.getElementById('simSensor').value='${id}';switchTab('dash',document.querySelectorAll('.tab')[0]);setTimeout(fireAlert,100)" style="flex:1;background:var(--accent);color:#fff;border:none;padding:6px;border-radius:5px;font-size:11px;font-weight:600;cursor:pointer">⚡ Fire</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── Incident table ─────────────────────────────────────────────────────
+function renderIncTable(){
+  const fs=document.getElementById('iFilterStatus').value;
+  const fv=document.getElementById('iFilterSev').value;
+  let shown=allIncidents;
+  if(fs) shown=shown.filter(i=>i.status===fs);
+  if(fv) shown=shown.filter(i=>i.severity===fv);
+  document.getElementById('incCount').textContent=`${shown.length} incident${shown.length!==1?'s':''}`;
+  const body=document.getElementById('incTableBody');
+  if(!shown.length){body.innerHTML='<tr><td colspan="8" style="text-align:center;padding:40px;color:var(--muted)">No incidents match</td></tr>';return;}
+  body.innerHTML=shown.map(i=>`
+    <tr onclick="switchTab('dash',document.querySelectorAll('.tab')[0]);setTimeout(()=>showDetail('${i.alert_id}'),150)">
+      <td style="font-family:var(--mono);color:var(--accent);font-size:11px">${i.alert_id}</td>
+      <td>${i.sensor_id}</td>
+      <td>${i.alert_type}</td>
+      <td><span class="b b-${i.severity}">${(i.severity||'').toUpperCase()}</span></td>
+      <td><span class="b b-${i.status||'analyzing'}">${statusLabel(i.status)}</span></td>
+      <td style="color:${parseFloat(i.confidence||0)>=.8?'var(--green)':'var(--red)'}">${i.confidence!=null?(parseFloat(i.confidence)*100).toFixed(0)+'%':'—'}</td>
+      <td style="color:var(--muted)">${i.created_at?.slice(0,19).replace('T',' ')||'—'}</td>
+      <td><button onclick="event.stopPropagation();switchTab('dash',document.querySelectorAll('.tab')[0]);setTimeout(()=>showDetail('${i.alert_id}'),150)" style="background:var(--surface2);border:1px solid var(--border);color:var(--muted2);padding:3px 8px;border-radius:4px;font-size:11px;cursor:pointer">View</button></td>
+    </tr>`).join('');
+}
+
+// ── CSV export — full incident history with de-duplicated actions ───────
+function downloadCSV(){
+  window.location.href = '/api/export/csv';
+  addLog('result', 'Export', '⬇ Downloading full incident report as CSV...');
+}
+
+// ── Equipment reference ────────────────────────────────────────────────
+function renderEquipmentPage(){
+  const el=document.getElementById('eqPage');
+  el.innerHTML=Object.entries(EQUIPMENT).map(([id,eq])=>`
+    <div class="eq-card">
+      <div class="eq-header">
+        <div>
+          <div class="eq-id">${id}</div>
+          <div class="eq-fullname">${eq.fullName}</div>
+          <div class="eq-type">${eq.type} · ${eq.zone}</div>
+        </div>
+        <button onclick="document.getElementById('simSensor').value='${id}';switchTab('dash',document.querySelectorAll('.tab')[0])" style="background:var(--accent);color:#fff;border:none;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Target →</button>
+      </div>
+      <div class="eq-body">
+        <div class="eq-section">
+          <h4>📐 Specifications</h4>
+          ${Object.entries(eq.specs).map(([k,v])=>`<div class="eq-row"><span class="eq-label">${k.replace(/_/g,' ')}</span><span class="eq-val">${v}</span></div>`).join('')}
+        </div>
+        <div class="eq-section">
+          <h4>✅ Normal Operating Range</h4>
+          ${Object.entries(eq.normal).map(([k,v])=>`<div class="eq-row"><span class="eq-label">${k.replace(/_/g,' ')}</span><span class="eq-val ok">${v}</span></div>`).join('')}
+          <h4 style="margin-top:14px">⚠️ Alert Thresholds</h4>
+          ${Object.entries(eq.thresholds).map(([k,v])=>`<div class="eq-row"><span class="eq-label">${k.replace(/_/g,' ')}</span><span class="eq-val warn">${v}</span></div>`).join('')}
+        </div>
+        <div class="eq-section">
+          <h4>🔴 Known Fault Types</h4>
+          <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px">${eq.faults.map(f=>`<span class="fault-chip">${f}</span>`).join('')}</div>
+          <h4>🔧 Maintenance Schedule</h4>
+          <div style="font-size:12px;color:var(--muted2);line-height:1.6;margin-top:6px">${eq.maintenance}</div>
+        </div>
+      </div>
+    </div>`).join('');
+}
+
+// ── Tab switching ──────────────────────────────────────────────────────
+function switchTab(name,el){
+  curTab=name;
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  if(el) el.classList.add('active');
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.getElementById('page-'+name).classList.add('active');
+  if(name==='dash'){ syncModeToggleUI(); renderSensorGrid(); }
+  if(name==='sensors') renderSensorsPage();
+  if(name==='incidents'){loadIncidents();renderIncTable();}
+  if(name==='equipment') renderEquipmentPage();
+  if(name==='settings') loadSettings();
+}
+
+// ── Settings tab ──────────────────────────────────────────────────────
+async function loadSettings(){
+  try {
+    const d = await (await fetch('/api/settings')).json();
+    document.getElementById('settingsEmails').value = (d.operator_emails||[]).join(', ');
+    document.getElementById('settingsSlack').value = d.slack_webhook_url || '';
+    document.getElementById('settingsConfVal').textContent = Math.round((d.confidence_threshold||0.8)*100) + '%';
+    document.getElementById('settingsSystemInfo').innerHTML = `
+      <div>Scan interval: <strong style="color:var(--text)">${d.scan_interval_seconds || 25}s</strong></div>
+      <div>Sensors monitored: <strong style="color:var(--text)">8</strong> (motors, pumps, compressor, conveyor, boiler)</div>
+      <div>Model: <strong style="color:var(--text)">Qwen (qwen-flash)</strong></div>
+    `;
+  } catch(e) {
+    document.getElementById('settingsSaveMsg').textContent = '⚠️ Could not load settings';
+    document.getElementById('settingsSaveMsg').style.color = 'var(--red)';
+  }
+}
+
+async function saveSettings(){
+  const emails = document.getElementById('settingsEmails').value;
+  const slack  = document.getElementById('settingsSlack').value;
+  const msgEl  = document.getElementById('settingsSaveMsg');
+  try {
+    const r = await fetch('/api/settings', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ operator_emails: emails, slack_webhook_url: slack })
+    });
+    const d = await r.json();
+    msgEl.style.color = 'var(--green)';
+    msgEl.textContent = `✅ Saved — notifications go to: ${(d.operator_emails||[]).join(', ')}`;
+    addLog('system', 'Settings', `Notification emails updated: ${(d.operator_emails||[]).join(', ')}`);
+    setTimeout(()=>{ msgEl.textContent=''; }, 4000);
+  } catch(e) {
+    msgEl.style.color = 'var(--red)';
+    msgEl.textContent = '⚠️ Failed to save settings';
+  }
+}
+
+// ── Utils ──────────────────────────────────────────────────────────────
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
+
+
+async function clearAllData(){
+  if(!confirm('Clear ALL incident data? This cannot be undone.')) return;
+  const r = await fetch('/api/clear',{method:'POST'});
+  if(r.ok){
+    allIncidents=[];selectedId=null;
+    renderList([]);
+    loadStats();
+    clearLog();
+    document.getElementById('detailPanel').innerHTML='<div style="padding:50px 16px;text-align:center;color:var(--muted);font-size:12px">🔍<br><br>Select an incident<br>to view details</div>';
+    document.getElementById('detailBadge').style.display='none';
+    if(document.getElementById('incTableBody')) document.getElementById('incTableBody').innerHTML='<tr><td colspan="8" style="text-align:center;padding:40px;color:var(--muted)">No incidents yet</td></tr>';
+    addLog('system','Cleared','✅ All incident data wiped. Fresh start.');
+  }
+}
+
+
+// ═══════════════════════════════════════════════════════
+// SENSOR CONTROL SYSTEM — single source of truth = SERVER
+// Per-sensor mode lives only in `sensorModes` (from server).
+// No separate global isManualMode flag — removes all the bugs.
+// ═══════════════════════════════════════════════════════
+let sensorStateData = {}, sensorThresholds = {}, sensorConfig = {}, sensorModes = {};
+let _userIsDraggingSlider = false;
+
+function currentSelectedSensor() {
+  return document.getElementById('sliderSensor')?.value || 'MOTOR-A1';
+}
+function isSensorManual(sid) {
+  return (sensorModes[sid] || 'auto') === 'manual';
+}
+
+// ── Full state fetch (state + thresholds + config + modes) ─────────────
+async function fetchSensorState(){
+  try {
+    const d = await (await fetch('/api/sensor-state')).json();
+    sensorStateData  = d.state      || {};
+    sensorThresholds = d.thresholds || {};
+    sensorConfig     = d.config     || {};
+    sensorModes      = d.modes      || {};
+    syncModeToggleUI();
+    if (!_userIsDraggingSlider) renderSliderPanel();
+    renderSensorGrid();
+    if (curTab === 'sensors') renderSensorsPage();
+  } catch(e) { console.error('fetchSensorState error:', e); }
+}
+
+// ── Lightweight tick (every 2s) — only moves AUTO sensors, smooth ──────
+async function serverTick(){
+  try {
+    const r = await fetch('/api/tick', { method: 'POST' });
+    const d = await r.json();
+    sensorStateData = d.state || sensorStateData;
+    if (_userIsDraggingSlider) return; // never touch UI mid-drag
+    renderSensorGrid();
+    if (curTab === 'sensors') renderSensorsPage();
+    // Update slider VALUES in place (no full rebuild = no flicker/reset) if current sensor is auto
+    const sid = currentSelectedSensor();
+    if (!isSensorManual(sid)) updateSliderValuesInPlace(sid);
+  } catch(e) { /* silent */ }
+}
+
+// ── Mode toggle reflects the CURRENTLY SELECTED sensor's real mode ─────
+function syncModeToggleUI(){
+  const sid     = currentSelectedSensor();
+  const manual  = isSensorManual(sid);
+  const toggle  = document.getElementById('modeToggle');
+  const label   = document.getElementById('modeLabel');
+  const desc    = document.getElementById('modeDesc');
+  const knob    = document.getElementById('modeKnob');
+  const thumb   = document.getElementById('modeThumb');
+  if (!toggle) return;
+  toggle.checked = manual;
+  if (manual) {
+    label.textContent = '🎚️ Manual Mode';
+    desc.textContent  = `${sid} — you control values via sliders`;
+    knob.style.transform = 'translateX(20px)';
+    thumb.style.background = 'var(--orange)';
+  } else {
+    label.textContent = '📡 Auto Mode';
+    desc.textContent  = `${sid} — server simulates live values`;
+    knob.style.transform = 'translateX(0)';
+    thumb.style.background = 'var(--accent)';
+  }
+  renderSliderPanel();
+}
+
+// User flips the toggle
+async function onModeSwitch(wantManual){
+  const sid = currentSelectedSensor();
+  await fetch(`/api/sensor-mode/${sid}`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ mode: wantManual ? 'manual' : 'auto' })
+  });
+  sensorModes[sid] = wantManual ? 'manual' : 'auto';
+  syncModeToggleUI();
+}
+
+// User picks a different sensor in the dropdown
+function onSensorSelect(sid){
+  document.getElementById('simSensor').value = sid;
+  syncModeToggleUI(); // pulls that sensor's real mode + redraws sliders
+}
+
+// ── Slider panel: ONLY rendered when selected sensor is in MANUAL mode ─
+function renderSliderPanel(){
+  const sid   = currentSelectedSensor();
+  const panel = document.getElementById('sliderPanel');
+  const info  = document.getElementById('sliderInfo');
+  if (!panel) return;
+
+  if (!isSensorManual(sid)) {
+    panel.innerHTML = '<div style="padding:14px 0;color:var(--muted);font-size:11px;text-align:center;line-height:1.6">📡 This sensor is in <strong>Auto</strong> mode.<br>Values are simulated by the server.<br>Flip the switch above to take manual control.</div>';
+    if (info) info.textContent = '';
+    return;
+  }
+
+  const state  = sensorStateData[sid]  || {};
+  const thresh = sensorThresholds[sid] || {};
+  if (!Object.keys(state).length) {
+    panel.innerHTML = '<div style="color:var(--muted);font-size:11px;padding:8px">Loading sensor data...</div>';
+    return;
+  }
+
+  panel.innerHTML = Object.entries(state).map(([metric, value]) => {
+    const cfg   = sensorConfig[metric] || {};
+    const t     = thresh[metric];
+    const min   = cfg.min ?? 0;
+    const max   = cfg.max ?? 200;
+    const step  = parseFloat(((max-min)/300).toFixed(4));
+    const okPct = t ? Math.min(98,(t*0.88/(max-min))*100).toFixed(1) : 80;
+    const wPct  = t ? Math.min(99,(t/(max-min))*100).toFixed(1) : 95;
+    const thPct = t ? (((t-min)/(max-min))*100).toFixed(1) : null;
+    const cls   = sliderColorClass(metric, value, t);
+    return `
+    <div class="slider-metric" id="sm-${sid}-${metric}">
+      <div class="slider-top">
+        <span class="slider-label">${cfg.label||metric}</span>
+        <span class="slider-value ${cls}" id="sv-${sid}-${metric}">${fmtVal(value)} <small>${cfg.unit||''}</small></span>
+      </div>
+      <div class="slider-track">
+        <div class="slider-bg" style="--ok-pct:${okPct}%;--warn-pct:${wPct}%"></div>
+        ${thPct!==null?`<div class="thresh-line" style="left:${thPct}%"><span class="thresh-label">${t}${cfg.unit||''}</span></div>`:''}
+        <input type="range" class="srange" min="${min}" max="${max}" step="${step}" value="${value}"
+          onpointerdown="_userIsDraggingSlider=true"
+          onpointerup="_userIsDraggingSlider=false"
+          oninput="onSlider('${sid}','${metric}',parseFloat(this.value))">
+      </div>
+      <div class="slider-meta">
+        <span>${min}${cfg.unit||''}</span>
+        ${t?`<span style="color:var(--red);font-size:10px">⚠ limit: ${t}${cfg.unit||''}</span>`:''}
+        <span>${max}${cfg.unit||''}</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  updateInfoBar(sid);
+}
+
+// Update only the numeric labels/positions without rebuilding DOM (for smooth auto-tick)
+function updateSliderValuesInPlace(sid){
+  const state  = sensorStateData[sid] || {};
+  const thresh = sensorThresholds[sid] || {};
+  Object.entries(state).forEach(([metric, value]) => {
+    const ve  = document.getElementById(`sv-${sid}-${metric}`);
+    const rng = document.querySelector(`#sm-${sid}-${metric} input[type=range]`);
+    if (!ve && !rng) return; // panel not showing this sensor — nothing to update
+    const cfg = sensorConfig[metric] || {};
+    const t   = thresh[metric];
+    const cls = sliderColorClass(metric, value, t);
+    if (ve)  { ve.innerHTML = `${fmtVal(value)} <small>${cfg.unit||''}</small>`; ve.className = `slider-value ${cls}`; }
+    if (rng) rng.value = value;
+  });
+}
+
+function sliderColorClass(metric, value, threshold){
+  if (!threshold) return 'ok';
+  const isLow = metric === 'flow_m3s' || metric === 'speed_m_s';
+  if (isLow) return value < threshold*1.1 ? 'crit' : value < threshold*1.3 ? 'warn' : 'ok';
+  return value >= threshold*1.1 ? 'crit' : value >= threshold*0.9 ? 'warn' : 'ok';
+}
+function fmtVal(v){ return typeof v === 'number' ? (Math.round(v*1000)/1000) : v; }
+
+function updateInfoBar(sid){
+  const state  = sensorStateData[sid]  || {};
+  const thresh = sensorThresholds[sid] || {};
+  const exceeding = Object.entries(state).filter(([m,v])=>{
+    const t = thresh[m]; if (!t) return false;
+    return (m==='flow_m3s'||m==='speed_m_s') ? v<t : v>t;
+  });
+  const info = document.getElementById('sliderInfo');
+  if (!info) return;
+  info.textContent = exceeding.length
+    ? `⚠️ ${exceeding.length} reading(s) above threshold — click "Fire Alert from Current Readings"`
+    : '✅ All normal. Slide any value past the red ⚠ limit to trigger.';
+  info.style.color = exceeding.length ? 'var(--orange)' : 'var(--muted)';
+}
+
+// ── User drags a slider ─────────────────────────────────────────────────
+async function onSlider(sensorId, metric, value){
+  value = Math.round(value*1000)/1000;
+  if (!sensorStateData[sensorId]) sensorStateData[sensorId] = {};
+  sensorStateData[sensorId][metric] = value;
+  const cfg = sensorConfig[metric] || {};
+  const t   = sensorThresholds[sensorId]?.[metric];
+  const cls = sliderColorClass(metric, value, t);
+  const el  = document.getElementById(`sv-${sensorId}-${metric}`);
+  if (el) { el.innerHTML = `${fmtVal(value)} <small>${cfg.unit||''}</small>`; el.className = `slider-value ${cls}`; }
+  clearTimeout(window._st);
+  window._st = setTimeout(async ()=>{
+    await fetch(`/api/sensor-state/${sensorId}/${metric}`, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({value})
+    });
+    updateInfoBar(sensorId);
+  }, 200);
+}
+
+// ── Fire alert from currently displayed live readings ───────────────────
+async function fireFromState(){
+  const sid = currentSelectedSensor();
+  const r   = await fetch(`/api/alerts/from-state/${sid}`, { method: 'POST' });
+  const d   = await r.json();
+  if (r.ok) {
+    addLog('sim','Alert Fired',`${d.alert.alert_type} on ${sid} [${d.alert.severity}] — agent responding...`);
+  } else if (d.error && d.error.includes('already being handled')) {
+    addLog('think','In Progress',`Agent is already repairing ${sid} — please wait.`);
+  } else {
+    addLog('err','No Alert', d.error||'All readings normal. Slide a value above the red limit first.');
+    const info = document.getElementById('sliderInfo');
+    if (info) { info.textContent = '⚠️ ' + (d.error||'Slide a value above threshold first.'); info.style.color = 'var(--orange)'; }
+  }
+}
+
+// ── Clear all data ───────────────────────────────────────────────────────
+async function clearAllData(){
+  if (!confirm('Clear ALL incident data? This cannot be undone.')) return;
+  const r = await fetch('/api/clear', { method: 'POST' });
+  if (r.ok) {
+    allIncidents = []; selectedId = null;
+    renderList([]);
+    loadStats();
+    clearLog();
+    document.getElementById('detailPanel').innerHTML = '<div style="padding:50px 16px;text-align:center;color:var(--muted);font-size:12px">🔍<br><br>Select an incident<br>to view details</div>';
+    document.getElementById('detailBadge').style.display = 'none';
+    const tb = document.getElementById('incTableBody');
+    if (tb) tb.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:var(--muted)">No incidents yet</td></tr>';
+    addLog('system','Cleared','✅ All data wiped. Fresh start.');
+  }
+}
+
+// ── Animate a fix the agent just made ────────────────────────────────────
+async function flashSensorFix(sensorId, changes){
+  if (!changes || !sensorId) return;
+  for (const [metric, chg] of Object.entries(changes)) {
+    const newVal = typeof chg === 'object' ? chg.to : chg;
+    if (!sensorStateData[sensorId]) sensorStateData[sensorId] = {};
+    sensorStateData[sensorId][metric] = newVal;
+    const card = document.getElementById(`sm-${sensorId}-${metric}`);
+    if (card) { card.classList.remove('pulse-fix'); void card.offsetWidth; card.classList.add('pulse-fix'); }
+    const cfg = sensorConfig[metric] || {};
+    const ve  = document.getElementById(`sv-${sensorId}-${metric}`);
+    const rng = document.querySelector(`#sm-${sensorId}-${metric} input[type=range]`);
+    const cls = sliderColorClass(metric, newVal, sensorThresholds[sensorId]?.[metric]);
+    if (ve)  { ve.innerHTML = `${fmtVal(newVal)} <small>${cfg.unit||''}</small>`; ve.className = `slider-value ${cls}`; }
+    if (rng) rng.value = newVal;
+    addLog('result','Sensor Fixed',`${sensorId} ${metric}: ${chg.from??'?'} → ${fmtVal(newVal)} ${cfg.unit||''} ✅`);
+  }
+  renderSensorGrid();
+  if (curTab === 'sensors') renderSensorsPage();
+  updateInfoBar(sensorId);
+}
+
+// ═══════════════════════════════════════════════════════
+// AUTO-SCAN — agent scans every 25 seconds, smooth countdown bar
+// ═══════════════════════════════════════════════════════
+const SCAN_INTERVAL = 25;
+let scanCountdown = SCAN_INTERVAL;
+let scanTimer = null;
+let scanRunning = false;
+
+function startAutoScan(){
+  scanCountdown = SCAN_INTERVAL;
+  clearInterval(scanTimer);
+  scanTimer = setInterval(tickScan, 1000);
+  _updateCountdownUI();
+}
+function tickScan(){
+  scanCountdown--;
+  _updateCountdownUI();
+  if (scanCountdown <= 0) {
+    scanCountdown = SCAN_INTERVAL;
+    _updateCountdownUI();
+    runAutoScan();
+  }
+}
+function resetScanCountdown(){
+  scanCountdown = SCAN_INTERVAL;
+  _updateCountdownUI();
+}
+function _updateCountdownUI(){
+  const pct  = (scanCountdown / SCAN_INTERVAL) * 100;
+  const col  = pct > 50 ? 'var(--green)' : pct > 25 ? 'var(--yellow)' : 'var(--red)';
+  const fill = document.getElementById('countdownFill');
+  const num  = document.getElementById('countdownNum');
+  if (fill) { fill.style.width = pct + '%'; fill.style.background = col; }
+  if (num)  { num.textContent = scanCountdown + 's'; num.style.color = col; }
+}
+
+async function runAutoScan(){
+  if (scanRunning) return;
+  scanRunning = true;
+  addLog('think','Auto Scan','🔄 Server scanning all sensors (skipping sensors already being repaired)...');
+  try {
+    const r = await fetch('/api/scan', { method: 'POST' });
+    const d = await r.json();
+    sensorStateData = d.state || sensorStateData;
+    if (d.alerts_found === 0) {
+      addLog('result','Scan Done',`✅ No new anomalies. Next scan in ${SCAN_INTERVAL}s.`);
+    } else {
+      d.alerts.forEach(a => addLog('sim','Anomaly',`⚠️ ${a.sensor_id}: ${a.alert_type} — ${a.data.value}${a.data.unit} (limit ${a.data.threshold}${a.data.unit})`));
+      addLog('done','Scan Done',`🚨 ${d.alerts_found} new alert(s) — agent responding...`);
+    }
+    renderSensorGrid();
+    if (curTab === 'sensors') renderSensorsPage();
+    renderSliderPanel();
+  } catch(e) {
+    addLog('err','Scan Error', e.message);
+  }
+  scanRunning = false;
+}
+
+// ── Patch fire buttons to reset the countdown ────────────────────────────
+const _origFireAlert = fireAlert;
+window.fireAlert = async function(){ resetScanCountdown(); await _origFireAlert(); };
+const _origFireFromState = fireFromState;
+window.fireFromState = async function(){ resetScanCountdown(); await _origFireFromState(); };
+
+// ── Init ───────────────────────────────────────────────────────────────
+connectWS();
+loadIncidents();
+loadStats();
+fetchSensorState();           // initial full sync (state + thresholds + modes)
+setInterval(()=>{loadStats();loadIncidents();}, 5000);
+setInterval(serverTick, 2000);          // smooth per-sensor movement for AUTO-mode sensors
+setInterval(fetchSensorState, 8000);    // periodic full resync (catches mode changes, drift)
+startAutoScan();                        // full anomaly scan every 25s
+</script>
+</body>
+</html>
