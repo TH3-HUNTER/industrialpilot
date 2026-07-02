@@ -14,7 +14,7 @@ load_dotenv()
 
 QWEN_API_KEY      = os.getenv("QWEN_API_KEY", "")
 QWEN_BASE_URL     = os.getenv("QWEN_BASE_URL", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
-QWEN_MODEL        = os.getenv("QWEN_MODEL", "qwen-plus")
+QWEN_MODEL        = os.getenv("QWEN_MODEL", "qwen3.6-flash")
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.80"))
 
 SYSTEM_PROMPT = """You are IndustrialPilot, an autonomous industrial AI agent integrated with a real factory SCADA/PLC system.
