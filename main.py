@@ -1,3 +1,6 @@
+"""
+IndustrialPilot — Main Entry Point
+"""
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -6,6 +9,7 @@ load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from backend.db.database import init_db, clear_all_data
 from backend.api.routes import router
@@ -13,7 +17,9 @@ from backend.api.routes import router
 app = FastAPI(title="IndustrialPilot", version="1.0.0", docs_url="/docs")
 app.include_router(router)
 
-FRONTEND = Path(__file__).parent / "frontend" / "index.html"
+FRONTEND_DIR = Path(__file__).parent / "frontend"
+FRONTEND     = FRONTEND_DIR / "index.html"
+app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
 
 @app.get("/")
