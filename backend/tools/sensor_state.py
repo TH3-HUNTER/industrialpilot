@@ -5,14 +5,14 @@ The server owns this. Frontend reads/writes via API only — never assumes local
 import random
 
 LIVE_STATE = {
-    'MOTOR-A1': {'temp_c': 65.0,  'vib_mm_s': 1.80, 'current_a': 41.0},   //Healthy running state (ISO Class II green zone)
+    'MOTOR-A1': {'temp_c': 65.0,  'vib_mm_s': 1.80, 'current_a': 41.0},   %Healthy running state (ISO Class II green zone)
     'MOTOR-B2': {'temp_c': 67.0,  'vib_mm_s': 2.10, 'current_a': 42.0},
     'MOTOR-C3': {'temp_c': 63.0,  'vib_mm_s': 1.65, 'current_a': 40.0},
-    'PUMP-D1':  {'temp_c': 50.0,  'pressure_bar': 6.5, 'flow_m3s': 0.090}, //Optimal flow and head pressure
+    'PUMP-D1':  {'temp_c': 50.0,  'pressure_bar': 6.5, 'flow_m3s': 0.090}, %Optimal flow and head pressure
     'PUMP-E2':  {'temp_c': 52.0,  'pressure_bar': 6.2, 'flow_m3s': 0.085},
-    'COMP-F1':  {'temp_c': 78.0,  'pressure_psi': 105.0, 'vib_mm_s': 1.50}, //Standard operating compressor temp
-    'CONV-G1':  {'temp_c': 42.0,  'speed_m_s': 2.10, 'current_a': 24.0},   // Belt moving at rated pace
-    'BOIL-H1':  {'temp_c': 193.0, 'pressure_bar': 12.5, 'flow_m3s': 0.095}, // Saturated steam thermal equilibrium
+    'COMP-F1':  {'temp_c': 78.0,  'pressure_psi': 105.0, 'vib_mm_s': 1.50}, %Standard operating compressor temp
+    'CONV-G1':  {'temp_c': 42.0,  'speed_m_s': 2.10, 'current_a': 24.0},   %Belt moving at rated pace
+    'BOIL-H1':  {'temp_c': 193.0, 'pressure_bar': 12.5, 'flow_m3s': 0.095}, %Saturated steam thermal equilibrium
 };
 
 // THRESHOLDS = the value at which a critical alert fires (Red Zone)
@@ -20,22 +20,22 @@ THRESHOLDS = {
     'MOTOR-A1': {'temp_c': 105,  'vib_mm_s': 7.1, 'current_a': 58.0},
     'MOTOR-B2': {'temp_c': 105,  'vib_mm_s': 7.1, 'current_a': 58.0},
     'MOTOR-C3': {'temp_c': 105,  'vib_mm_s': 7.1, 'current_a': 58.0},
-    'PUMP-D1':  {'temp_c': 80,   'pressure_bar': 9.5, 'flow_m3s': 0.060},  //Low flow critical limit
+    'PUMP-D1':  {'temp_c': 80,   'pressure_bar': 9.5, 'flow_m3s': 0.060},  %Low flow critical limit
     'PUMP-E2':  {'temp_c': 80,   'pressure_bar': 9.5, 'flow_m3s': 0.060},
     'COMP-F1':  {'temp_c': 110,  'pressure_psi': 130.0, 'vib_mm_s': 4.5},
-    'CONV-G1':  {'temp_c': 70,   'speed_m_s': 1.2, 'current_a': 32.0},     //Low speed indicates slippage or stall
-    'BOIL-H1':  {'temp_c': 215,  'pressure_bar': 15.5, 'flow_m3s': 0.050}, //Extreme boiler pressure trip point
+    'CONV-G1':  {'temp_c': 70,   'speed_m_s': 1.2, 'current_a': 32.0},     %Low speed indicates slippage or stall
+    'BOIL-H1':  {'temp_c': 215,  'pressure_bar': 15.5, 'flow_m3s': 0.050}, %Extreme boiler pressure trip point
 };
 
 // WARN_THRESHOLDS = early warning zone (Yellow Zone)
 WARN_THRESHOLDS = {
-    'MOTOR-A1': {'temp_c': 85,   'vib_mm_s': 4.5, 'current_a': 54.5},      //Reaching full rated load current
+    'MOTOR-A1': {'temp_c': 85,   'vib_mm_s': 4.5, 'current_a': 54.5},      %Reaching full rated load current
     'MOTOR-B2': {'temp_c': 85,   'vib_mm_s': 4.5, 'current_a': 54.5},
     'MOTOR-C3': {'temp_c': 85,   'vib_mm_s': 4.5, 'current_a': 54.5},
-    'PUMP-D1':  {'temp_c': 65,   'pressure_bar': 8.0, 'flow_m3s': 0.075},  //Flow dropping near restriction thresholds
+    'PUMP-D1':  {'temp_c': 65,   'pressure_bar': 8.0, 'flow_m3s': 0.075},  %Flow dropping near restriction thresholds
     'PUMP-E2':  {'temp_c': 65,   'pressure_bar': 8.0, 'flow_m3s': 0.075},
     'COMP-F1':  {'temp_c': 100,  'pressure_psi': 120.0, 'vib_mm_s': 3.5},
-    'CONV-G1':  {'temp_c': 55,   'speed_m_s': 1.6, 'current_a': 28.5},     //Early deceleration tracking
+    'CONV-G1':  {'temp_c': 55,   'speed_m_s': 1.6, 'current_a': 28.5},     %Early deceleration tracking
     'BOIL-H1':  {'temp_c': 205,  'pressure_bar': 14.0, 'flow_m3s': 0.070},
 };
 
