@@ -1278,7 +1278,7 @@ async function flashSensorFix(sensorId, changes){
 const SCAN_INTERVAL = 30;
 let scanCountdown = SCAN_INTERVAL;
 let scanTimer = null;
-let scanRunning = true;
+let scanRunning = false;
 let scanPaused = false;
 
 function startAutoScan(){
