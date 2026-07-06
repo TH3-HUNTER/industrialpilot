@@ -190,6 +190,11 @@ select:focus,input:focus{border-color:var(--accent)}
 .eq-val.warn{color:var(--orange)}
 .eq-val.ok{color:var(--green)}
 .fault-chip{display:inline-flex;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600;margin:2px;background:rgba(239,68,68,.1);color:var(--red)}
+.eq-table{width:100%;border-collapse:collapse;font-size:11.5px}
+.eq-table td{padding:3px 0;vertical-align:top}
+.eq-k{color:var(--muted2);width:45%;padding-right:8px}
+.eq-v{color:var(--text);font-weight:600;font-family:var(--mono)}
+.eq-sec-title{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid var(--border)}
 
 ::-webkit-scrollbar{width:4px;height:4px}
 ::-webkit-scrollbar-track{background:transparent}
@@ -366,7 +371,8 @@ input[type=range].srange::-webkit-slider-runnable-track{height:6px;border-radius
         <div style="flex:1;background:var(--border);border-radius:3px;height:5px;overflow:hidden">
           <div id="countdownFill" style="height:100%;border-radius:3px;background:var(--green);transition:width 1s linear;width:100%"></div>
         </div>
-        <span id="countdownNum" style="font-size:12px;font-weight:700;color:var(--green);font-family:var(--mono);min-width:28px;text-align:right">15s</span>
+        <span id="countdownNum" style="font-size:12px;font-weight:700;color:var(--green);font-family:var(--mono);min-width:28px;text-align:right">30s</span>
+        <button id="pauseBtn" onclick="toggleScanPause()" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:2px 9px;border-radius:5px;font-size:11px;cursor:pointer;font-weight:600;flex-shrink:0">⏸ Pause</button>
       </div>
       <div class="ph">
         <span class="ph-title">📋 Incidents</span>
@@ -503,68 +509,84 @@ let ws, selectedId=null, allIncidents=[], curTab='dash';
 // ── Equipment reference data ───────────────────────────────────────────
 const EQUIPMENT = {
   'MOTOR-A1':{
-    fullName:'AC Induction Motor — Production Line 1',type:'Electric Motor',zone:'Zone A',
-    specs:{rated_power:'75 kW',voltage:'400 V AC',rated_current:'138 A',speed:'1480 RPM',efficiency:'IE3 (94.5%)'},
-    normal:{temp:'55–75 °C',vibration:'0.2–0.6 mm/s',current:'38–48 A',speed:'1450–1510 RPM'},
-    thresholds:{max_temp:'85 °C',max_vibration:'7.5 mm/s',max_current:'45 A',min_speed:'1400 RPM'},
+    fullName:'AC Induction Motor — Production Line 1', type:'Electric Motor', zone:'Zone A',
+    specs:{rated_power:'75 kW', voltage:'400 V AC (±10%)', rated_current:'138 A', speed:'1480 RPM', efficiency:'IE3 — 94.5%', insulation:'Class F (155°C max winding)', pf:'0.85', starts_per_hour:'≤6'},
+    normal:{temp_c:'55–72 °C', vib_mm_s:'0.2–6.0 mm/s', current_a:'38–38 A'},
+    warn:   {temp_c:'72 °C', vib_mm_s:'6.0 mm/s', current_a:'38 A'},
+    alert:  {temp_c:'85 °C', vib_mm_s:'7.5 mm/s', current_a:'45 A'},
+    critical:{temp_c:'100 °C — insulation damage', vib_mm_s:'10+ mm/s — imminent bearing failure', current_a:'55 A — thermal trip'},
     faults:['OVERTEMPERATURE','EXCESSIVE_VIBRATION','OVERCURRENT','BEARING_FAULT','INSULATION_FAULT'],
-    maintenance:'Every 3 months — lubrication, alignment check, insulation test',
+    maintenance:'Every 3 months: lubrication (Mobilux EP2), alignment check (≤0.05mm), insulation resistance test (>1MΩ), bearing vibration baseline',
   },
   'MOTOR-B2':{
-    fullName:'AC Induction Motor — Production Line 2',type:'Electric Motor',zone:'Zone B',
-    specs:{rated_power:'75 kW',voltage:'400 V AC',rated_current:'138 A',speed:'1480 RPM',efficiency:'IE3 (94.5%)'},
-    normal:{temp:'55–75 °C',vibration:'0.2–0.6 mm/s',current:'38–48 A',speed:'1450–1510 RPM'},
-    thresholds:{max_temp:'85 °C',max_vibration:'7.5 mm/s',max_current:'45 A',min_speed:'1400 RPM'},
+    fullName:'AC Induction Motor — Production Line 2', type:'Electric Motor', zone:'Zone B',
+    specs:{rated_power:'75 kW', voltage:'400 V AC (±10%)', rated_current:'138 A', speed:'1480 RPM', efficiency:'IE3 — 94.5%', insulation:'Class F', pf:'0.85', starts_per_hour:'≤6'},
+    normal:{temp_c:'55–72 °C', vib_mm_s:'0.2–6.0 mm/s', current_a:'38–38 A'},
+    warn:   {temp_c:'72 °C', vib_mm_s:'6.0 mm/s', current_a:'38 A'},
+    alert:  {temp_c:'85 °C', vib_mm_s:'7.5 mm/s', current_a:'45 A'},
+    critical:{temp_c:'100 °C', vib_mm_s:'10+ mm/s', current_a:'55 A'},
     faults:['OVERTEMPERATURE','EXCESSIVE_VIBRATION','OVERCURRENT','BEARING_FAULT','INSULATION_FAULT'],
-    maintenance:'Every 3 months — lubrication, alignment check, insulation test',
+    maintenance:'Every 3 months: lubrication, alignment, insulation test',
   },
   'MOTOR-C3':{
-    fullName:'AC Induction Motor — Production Line 3',type:'Electric Motor',zone:'Zone C',
-    specs:{rated_power:'55 kW',voltage:'400 V AC',rated_current:'103 A',speed:'1480 RPM',efficiency:'IE3 (94.0%)'},
-    normal:{temp:'55–75 °C',vibration:'0.2–0.6 mm/s',current:'38–48 A',speed:'1450–1510 RPM'},
-    thresholds:{max_temp:'85 °C',max_vibration:'7.5 mm/s',max_current:'45 A',min_speed:'1400 RPM'},
+    fullName:'AC Induction Motor — Production Line 3', type:'Electric Motor', zone:'Zone C',
+    specs:{rated_power:'55 kW', voltage:'400 V AC (±10%)', rated_current:'103 A', speed:'1480 RPM', efficiency:'IE3 — 94.0%', insulation:'Class F', pf:'0.85', starts_per_hour:'≤6'},
+    normal:{temp_c:'55–72 °C', vib_mm_s:'0.2–6.0 mm/s', current_a:'35–38 A'},
+    warn:   {temp_c:'72 °C', vib_mm_s:'6.0 mm/s', current_a:'38 A'},
+    alert:  {temp_c:'85 °C', vib_mm_s:'7.5 mm/s', current_a:'45 A'},
+    critical:{temp_c:'100 °C', vib_mm_s:'10+ mm/s', current_a:'55 A'},
     faults:['OVERTEMPERATURE','EXCESSIVE_VIBRATION','OVERCURRENT','BEARING_FAULT','INSULATION_FAULT'],
-    maintenance:'Every 3 months — lubrication, alignment check, insulation test',
+    maintenance:'Every 3 months: lubrication, alignment, insulation test',
   },
   'PUMP-D1':{
-    fullName:'Centrifugal Cooling Water Pump',type:'Centrifugal Pump',zone:'Zone D — Cooling System',
-    specs:{rated_power:'22 kW',flow_rate:'0.05–0.12 m³/s',head:'35 m',impeller:'Bronze 280mm'},
-    normal:{temp:'40–60 °C',pressure:'4–8 bar',flow:'0.05–0.12 m³/s'},
-    thresholds:{max_temp:'70 °C',max_pressure:'12 bar',min_flow:'0.05 m³/s'},
+    fullName:'Centrifugal Cooling Water Pump', type:'Centrifugal Pump', zone:'Zone D — Cooling System',
+    specs:{rated_power:'22 kW', flow_rate:'0.05–0.12 m³/s', head:'35 m', impeller:'Bronze 280mm', seal:'Mechanical seal — water cooled', npsh:'3.2 m'},
+    normal:{temp_c:'40–60 °C', pressure_bar:'4–10 bar', flow_m3s:'0.065–0.12 m³/s'},
+    warn:   {temp_c:'60 °C', pressure_bar:'10.0 bar', flow_m3s:'0.065 m³/s (min safe)'},
+    alert:  {temp_c:'70 °C', pressure_bar:'12.0 bar', flow_m3s:'0.050 m³/s (cavitation risk)'},
+    critical:{temp_c:'80 °C — seal failure risk', pressure_bar:'15 bar — casing rupture', flow_m3s:'<0.03 m³/s — severe cavitation'},
     faults:['HIGH_PRESSURE','LOW_FLOW_RATE','OVERTEMPERATURE','CAVITATION'],
-    maintenance:'Monthly — seal inspection, impeller check, alignment verification',
+    maintenance:'Monthly: seal inspection, impeller wear check, alignment. Annually: full overhaul.',
   },
   'PUMP-E2':{
-    fullName:'Hydraulic Gear Pump — Hydraulic Circuit',type:'Hydraulic Pump',zone:'Zone E — Hydraulics',
-    specs:{rated_power:'30 kW',flow_rate:'0.05–0.10 m³/s',max_pressure:'16 bar',displacement:'71 cc/rev'},
-    normal:{temp:'40–60 °C',pressure:'4–8 bar',flow:'0.05–0.10 m³/s'},
-    thresholds:{max_temp:'70 °C',max_pressure:'12 bar',min_flow:'0.05 m³/s'},
+    fullName:'Hydraulic Gear Pump — Hydraulic Circuit', type:'Hydraulic Pump', zone:'Zone E — Hydraulics',
+    specs:{rated_power:'30 kW', flow_rate:'0.05–0.10 m³/s', max_pressure:'16 bar', displacement:'71 cc/rev', fluid:'ISO VG 46 hydraulic oil', filter:'10 micron'},
+    normal:{temp_c:'40–60 °C', pressure_bar:'4–10 bar', flow_m3s:'0.065–0.10 m³/s'},
+    warn:   {temp_c:'60 °C', pressure_bar:'10.0 bar', flow_m3s:'0.065 m³/s'},
+    alert:  {temp_c:'70 °C', pressure_bar:'12.0 bar', flow_m3s:'0.050 m³/s'},
+    critical:{temp_c:'85 °C — oil degradation', pressure_bar:'16 bar — relief valve opens', flow_m3s:'<0.03 m³/s'},
     faults:['HIGH_PRESSURE','LOW_FLOW_RATE','OVERTEMPERATURE','CAVITATION'],
-    maintenance:'Monthly — oil change, filter replacement, pressure relief valve test',
+    maintenance:'Monthly: oil sample analysis, filter replacement, pressure check. Oil change every 2000h.',
   },
   'COMP-F1':{
-    fullName:'Rotary Screw Air Compressor',type:'Air Compressor',zone:'Zone F — Air Supply',
-    specs:{rated_power:'90 kW',output_pressure:'8–13 bar',capacity:'16 m³/min',cooling:'Air-cooled'},
-    normal:{temp:'60–80 °C',pressure:'8–10 bar (delivery)',vibration:'0.1–0.4 mm/s'},
-    thresholds:{max_temp:'95 °C',max_pressure:'13 bar / 150 psi',max_vibration:'5.0 mm/s'},
+    fullName:'Rotary Screw Air Compressor', type:'Air Compressor', zone:'Zone F — Air Supply',
+    specs:{rated_power:'90 kW', output_pressure:'8–13 bar', capacity:'16 m³/min', cooling:'Air-cooled', oil_type:'Synthetic compressor oil 8000h', unload_pressure:'12.5 bar'},
+    normal:{temp_c:'60–81 °C', pressure_psi:'90–127 psi', vib_mm_s:'0.1–4.0 mm/s'},
+    warn:   {temp_c:'81 °C', pressure_psi:'127 psi', vib_mm_s:'4.0 mm/s'},
+    alert:  {temp_c:'95 °C', pressure_psi:'150 psi', vib_mm_s:'5.0 mm/s'},
+    critical:{temp_c:'110 °C — oil breakdown, bearing seizure imminent', pressure_psi:'175 psi — safety valve lifts', vib_mm_s:'8+ mm/s — rotor damage'},
     faults:['HIGH_PRESSURE','OVERTEMPERATURE','EXCESSIVE_VIBRATION','OIL_PRESSURE_LOW'],
-    maintenance:'Every 2 months — oil filter, air filter, belt tension, safety valve test',
+    maintenance:'Every 2 months: oil/filter change, belt tension, safety valve test. Annual: full screw element inspection.',
   },
   'CONV-G1':{
-    fullName:'Belt Conveyor System — Assembly Line',type:'Belt Conveyor',zone:'Zone G — Assembly Line',
-    specs:{belt_width:'800 mm',belt_speed:'1.5–2.5 m/s',max_load:'500 kg/m',drive_power:'15 kW'},
-    normal:{temp:'35–55 °C',speed:'1.5–2.5 m/s',current:'20–30 A'},
-    thresholds:{max_temp:'60 °C',min_speed:'1.2 m/s',max_current:'30 A'},
-    faults:['UNDERSPEED','OVERTEMPERATURE','OVERCURRENT','BELT_SLIP'],
-    maintenance:'Weekly — belt tension, roller inspection, tracking adjustment',
+    fullName:'Belt Conveyor System — Assembly Line', type:'Belt Conveyor', zone:'Zone G — Assembly Line',
+    specs:{belt_width:'800 mm', belt_speed:'1.5–2.5 m/s', max_load:'500 kg/m', drive_power:'15 kW', belt_type:'EP 400/3 rubber', take_up:'Screw tensioner'},
+    normal:{temp_c:'35–51 °C', speed_m_s:'1.5–2.5 m/s', current_a:'18–25 A'},
+    warn:   {temp_c:'51 °C', speed_m_s:'1.5 m/s (min safe)', current_a:'25 A'},
+    alert:  {temp_c:'60 °C', speed_m_s:'1.2 m/s (slip detected)', current_a:'30 A'},
+    critical:{temp_c:'75 °C — gearbox damage', speed_m_s:'<0.8 m/s — belt stalled or jammed', current_a:'40 A — motor trip'},
+    faults:['UNDERSPEED','BELT_SLIP','OVERTEMPERATURE','OVERCURRENT'],
+    maintenance:'Weekly: belt tension, tracking, roller inspection. Monthly: gearbox oil level, drive coupling.',
   },
   'BOIL-H1':{
-    fullName:'Fire-Tube Steam Boiler',type:'Steam Boiler',zone:'Zone H — Steam Plant',
-    specs:{capacity:'5,000 kg/h steam',working_pressure:'16 bar',temperature:'204 °C',fuel:'Natural Gas'},
-    normal:{temp:'160–180 °C',pressure:'12–15 bar',flow:'0.05–0.10 m³/s'},
-    thresholds:{max_temp:'200 °C',max_pressure:'16 bar',min_flow:'0.04 m³/s'},
+    fullName:'Fire-Tube Steam Boiler', type:'Steam Boiler', zone:'Zone H — Steam Plant',
+    specs:{capacity:'5,000 kg/h steam', working_pressure:'16 bar', design_pressure:'20 bar', temperature:'204 °C', fuel:'Natural Gas', efficiency:'92%', safety_valve:'Set at 17.5 bar'},
+    normal:{temp_c:'153–165 °C', pressure_bar:'10–13.5 bar', flow_m3s:'0.095–0.12 m³/s'},
+    warn:   {temp_c:'165 °C', pressure_bar:'13.5 bar', flow_m3s:'0.095 m³/s (feedwater low)'},
+    alert:  {temp_c:'180 °C', pressure_bar:'16.0 bar', flow_m3s:'0.080 m³/s (critical low)'},
+    critical:{temp_c:'200 °C — safety valve must lift', pressure_bar:'17.5 bar — safety valve lifts', flow_m3s:'<0.04 m³/s — DRY FIRE RISK, immediate shutdown'},
     faults:['OVERPRESSURE','OVERTEMPERATURE','LOW_WATER_FLOW','FLAME_FAILURE'],
-    maintenance:'Monthly — water treatment test, safety valve test, burner inspection',
+    maintenance:'Monthly: water treatment, safety valve test, blowdown. Annual: full pressure vessel inspection (certified engineer).',
   },
 };
 
@@ -851,7 +873,19 @@ function downloadCSV(){
 // ── Equipment reference ────────────────────────────────────────────────
 function renderEquipmentPage(){
   const el=document.getElementById('eqPage');
-  el.innerHTML=Object.entries(EQUIPMENT).map(([id,eq])=>`
+  el.innerHTML = Object.entries(EQUIPMENT).map(([id,eq])=>{
+    const specRows    = Object.entries(eq.specs).map(([k,v])=>
+      `<tr><td class="eq-k">${k.replace(/_/g,' ')}</td><td class="eq-v">${v}</td></tr>`).join('');
+    const normalRows  = Object.entries(eq.normal).map(([k,v])=>
+      `<tr><td class="eq-k">${k.replace(/_/g,' ')}</td><td class="eq-v" style="color:var(--green)">${v}</td></tr>`).join('');
+    const warnRows    = Object.entries(eq.warn).map(([k,v])=>
+      `<tr><td class="eq-k">${k.replace(/_/g,' ')}</td><td class="eq-v" style="color:var(--yellow)">${v}</td></tr>`).join('');
+    const alertRows   = Object.entries(eq.alert).map(([k,v])=>
+      `<tr><td class="eq-k">${k.replace(/_/g,' ')}</td><td class="eq-v" style="color:var(--orange)">${v}</td></tr>`).join('');
+    const critRows    = Object.entries(eq.critical).map(([k,v])=>
+      `<tr><td class="eq-k">${k.replace(/_/g,' ')}</td><td class="eq-v" style="color:var(--red);font-size:11px">${v}</td></tr>`).join('');
+    const faultChips  = eq.faults.map(f=>`<span class="fault-chip">${f}</span>`).join('');
+    return `
     <div class="eq-card">
       <div class="eq-header">
         <div>
@@ -859,29 +893,40 @@ function renderEquipmentPage(){
           <div class="eq-fullname">${eq.fullName}</div>
           <div class="eq-type">${eq.type} · ${eq.zone}</div>
         </div>
-        <button onclick="document.getElementById('simSensor').value='${id}';switchTab('dash',document.querySelectorAll('.tab')[0])" style="background:var(--accent);color:#fff;border:none;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Target →</button>
+        <button onclick="document.getElementById('simSensor').value='${id}';document.getElementById('sliderSensor').value='${id}';switchTab('dash',document.querySelectorAll('.tab')[0])" style="background:var(--accent);color:#fff;border:none;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Target →</button>
       </div>
-      <div class="eq-body">
-        <div class="eq-section">
-          <h4>📐 Specifications</h4>
-          ${Object.entries(eq.specs).map(([k,v])=>`<div class="eq-row"><span class="eq-label">${k.replace(/_/g,' ')}</span><span class="eq-val">${v}</span></div>`).join('')}
-        </div>
-        <div class="eq-section">
-          <h4>✅ Normal Operating Range</h4>
-          ${Object.entries(eq.normal).map(([k,v])=>`<div class="eq-row"><span class="eq-label">${k.replace(/_/g,' ')}</span><span class="eq-val ok">${v}</span></div>`).join('')}
-          <h4 style="margin-top:14px">⚠️ Alert Thresholds</h4>
-          ${Object.entries(eq.thresholds).map(([k,v])=>`<div class="eq-row"><span class="eq-label">${k.replace(/_/g,' ')}</span><span class="eq-val warn">${v}</span></div>`).join('')}
-        </div>
-        <div class="eq-section">
-          <h4>🔴 Known Fault Types</h4>
-          <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px">${eq.faults.map(f=>`<span class="fault-chip">${f}</span>`).join('')}</div>
-          <h4>🔧 Maintenance Schedule</h4>
-          <div style="font-size:12px;color:var(--muted2);line-height:1.6;margin-top:6px">${eq.maintenance}</div>
-        </div>
-      </div>
-    </div>`).join('');
-}
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:0;border-top:1px solid var(--border)">
 
+        <div style="padding:14px 16px;border-right:1px solid var(--border)">
+          <div class="eq-sec-title">📐 Specifications</div>
+          <table class="eq-table">${specRows}</table>
+        </div>
+
+        <div style="padding:14px 16px;border-right:1px solid var(--border)">
+          <div class="eq-sec-title" style="color:var(--green)">✅ Normal Range</div>
+          <table class="eq-table">${normalRows}</table>
+          <div class="eq-sec-title" style="color:var(--yellow);margin-top:12px">⚠️ Warning Zone</div>
+          <table class="eq-table">${warnRows}</table>
+        </div>
+
+        <div style="padding:14px 16px;border-right:1px solid var(--border)">
+          <div class="eq-sec-title" style="color:var(--orange)">🔴 Alert Threshold</div>
+          <table class="eq-table">${alertRows}</table>
+          <div class="eq-sec-title" style="color:var(--red);margin-top:12px">☠️ Critical / Shutdown</div>
+          <table class="eq-table">${critRows}</table>
+        </div>
+
+        <div style="padding:14px 16px">
+          <div class="eq-sec-title">🔧 Known Fault Types</div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:14px">${faultChips}</div>
+          <div class="eq-sec-title">🛠 Maintenance Schedule</div>
+          <div style="font-size:11.5px;color:var(--muted2);line-height:1.7;margin-top:6px">${eq.maintenance}</div>
+        </div>
+
+      </div>
+    </div>`;
+  }).join('');
+}
 // ── Tab switching ──────────────────────────────────────────────────────
 function switchTab(name,el){
   curTab=name;
@@ -960,7 +1005,7 @@ async function clearAllData(){
 // Per-sensor mode lives only in `sensorModes` (from server).
 // No separate global isManualMode flag — removes all the bugs.
 // ═══════════════════════════════════════════════════════
-let sensorStateData = {}, sensorThresholds = {}, sensorConfig = {}, sensorModes = {};
+let sensorStateData = {}, sensorThresholds = {}, sensorWarnThresholds = {}, sensorConfig = {}, sensorModes = {};
 let _userIsDraggingSlider = false;
 
 function currentSelectedSensor() {
@@ -974,10 +1019,11 @@ function isSensorManual(sid) {
 async function fetchSensorState(){
   try {
     const d = await (await fetch('/api/sensor-state')).json();
-    sensorStateData  = d.state      || {};
-    sensorThresholds = d.thresholds || {};
-    sensorConfig     = d.config     || {};
-    sensorModes      = d.modes      || {};
+    sensorStateData       = d.state           || {};
+    sensorThresholds      = d.thresholds      || {};
+    sensorWarnThresholds  = d.warn_thresholds || {};
+    sensorConfig          = d.config          || {};
+    sensorModes           = d.modes           || {};
     syncModeToggleUI();
     if (!_userIsDraggingSlider) renderSliderPanel();
     renderSensorGrid();
@@ -1068,10 +1114,17 @@ function renderSliderPanel(){
     const min   = cfg.min ?? 0;
     const max   = cfg.max ?? 200;
     const step  = parseFloat(((max-min)/300).toFixed(4));
-    const okPct = t ? Math.min(98,(t*0.88/(max-min))*100).toFixed(1) : 80;
-    const wPct  = t ? Math.min(99,(t/(max-min))*100).toFixed(1) : 95;
-    const thPct = t ? (((t-min)/(max-min))*100).toFixed(1) : null;
-    const cls   = sliderColorClass(metric, value, t);
+    const wt    = sensorWarnThresholds[sid]?.[metric];
+    const isLow = metric === 'flow_m3s' || metric === 'speed_m_s';
+    // For normal metrics (high=bad): green up to warn, yellow to alert, red beyond
+    // For low metrics (low=bad): red below alert, yellow to warn, green above warn
+    const alertPct = t ? (((t - min) / (max - min)) * 100).toFixed(1) : 90;
+    const warnPct  = wt ? (((wt - min) / (max - min)) * 100).toFixed(1) : (t ? (alertPct * 0.85).toFixed(1) : 75);
+    const okPct    = isLow ? warnPct : warnPct;
+    const wPct     = isLow ? alertPct : alertPct;
+    const thPct    = t ? alertPct : null;
+    const wt  = sensorWarnThresholds[sid]?.[metric];
+    const cls   = sliderColorClass(metric, value, t, wt);
     return `
     <div class="slider-metric" id="sm-${sid}-${metric}">
       <div class="slider-top">
@@ -1107,17 +1160,25 @@ function updateSliderValuesInPlace(sid){
     if (!ve && !rng) return; // panel not showing this sensor — nothing to update
     const cfg = sensorConfig[metric] || {};
     const t   = thresh[metric];
-    const cls = sliderColorClass(metric, value, t);
+    const wt  = sensorWarnThresholds[sid]?.[metric];
+    const cls = sliderColorClass(metric, value, t, wt);
     if (ve)  { ve.innerHTML = `${fmtVal(value)} <small>${cfg.unit||''}</small>`; ve.className = `slider-value ${cls}`; }
     if (rng) rng.value = value;
   });
 }
 
-function sliderColorClass(metric, value, threshold){
-  if (!threshold) return 'ok';
+function sliderColorClass(metric, value, alertThreshold, warnThreshold){
+  if (!alertThreshold) return 'ok';
   const isLow = metric === 'flow_m3s' || metric === 'speed_m_s';
-  if (isLow) return value < threshold*1.1 ? 'crit' : value < threshold*1.3 ? 'warn' : 'ok';
-  return value >= threshold*1.1 ? 'crit' : value >= threshold*0.9 ? 'warn' : 'ok';
+  if (isLow) {
+    if (value <= alertThreshold)             return 'crit';
+    if (warnThreshold && value <= warnThreshold) return 'warn';
+    return 'ok';
+  } else {
+    if (value >= alertThreshold)             return 'crit';
+    if (warnThreshold && value >= warnThreshold) return 'warn';
+    return 'ok';
+  }
 }
 function fmtVal(v){ return typeof v === 'number' ? (Math.round(v*1000)/1000) : v; }
 
@@ -1143,7 +1204,8 @@ async function onSlider(sensorId, metric, value){
   sensorStateData[sensorId][metric] = value;
   const cfg = sensorConfig[metric] || {};
   const t   = sensorThresholds[sensorId]?.[metric];
-  const cls = sliderColorClass(metric, value, t);
+  const wt  = sensorThresholds[sensorId]?.[metric] ? sensorWarnThresholds[sensorId]?.[metric] : null;
+  const cls = sliderColorClass(metric, value, t, wt);
   const el  = document.getElementById(`sv-${sensorId}-${metric}`);
   if (el) { el.innerHTML = `${fmtVal(value)} <small>${cfg.unit||''}</small>`; el.className = `slider-value ${cls}`; }
   clearTimeout(window._st);
@@ -1200,7 +1262,7 @@ async function flashSensorFix(sensorId, changes){
     const cfg = sensorConfig[metric] || {};
     const ve  = document.getElementById(`sv-${sensorId}-${metric}`);
     const rng = document.querySelector(`#sm-${sensorId}-${metric} input[type=range]`);
-    const cls = sliderColorClass(metric, newVal, sensorThresholds[sensorId]?.[metric]);
+    const cls = sliderColorClass(metric, newVal, sensorThresholds[sensorId]?.[metric], sensorWarnThresholds[sensorId]?.[metric]);
     if (ve)  { ve.innerHTML = `${fmtVal(newVal)} <small>${cfg.unit||''}</small>`; ve.className = `slider-value ${cls}`; }
     if (rng) rng.value = newVal;
     addLog('result','Sensor Fixed',`${sensorId} ${metric}: ${chg.from??'?'} → ${fmtVal(newVal)} ${cfg.unit||''} ✅`);
@@ -1213,10 +1275,11 @@ async function flashSensorFix(sensorId, changes){
 // ═══════════════════════════════════════════════════════
 // AUTO-SCAN — agent scans every 25 seconds, smooth countdown bar
 // ═══════════════════════════════════════════════════════
-const SCAN_INTERVAL = 25;
+const SCAN_INTERVAL = 30;
 let scanCountdown = SCAN_INTERVAL;
 let scanTimer = null;
 let scanRunning = false;
+let scanPaused = false;
 
 function startAutoScan(){
   scanCountdown = SCAN_INTERVAL;
@@ -1225,6 +1288,7 @@ function startAutoScan(){
   _updateCountdownUI();
 }
 function tickScan(){
+  if (scanPaused) return;
   scanCountdown--;
   _updateCountdownUI();
   if (scanCountdown <= 0) {
@@ -1232,6 +1296,19 @@ function tickScan(){
     _updateCountdownUI();
     runAutoScan();
   }
+}
+
+function toggleScanPause(){
+  scanPaused = !scanPaused;
+  const btn = document.getElementById('pauseBtn');
+  if (btn) {
+    btn.textContent = scanPaused ? '▶ Resume' : '⏸ Pause';
+    btn.style.color = scanPaused ? 'var(--green)' : 'var(--muted)';
+  }
+  const fill = document.getElementById('countdownFill');
+  if (fill) fill.style.opacity = scanPaused ? '0.35' : '1';
+  const num  = document.getElementById('countdownNum');
+  if (num && scanPaused) num.textContent = 'PAUSED';
 }
 function resetScanCountdown(){
   scanCountdown = SCAN_INTERVAL;
