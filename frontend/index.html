@@ -1278,7 +1278,7 @@ async function flashSensorFix(sensorId, changes){
 const SCAN_INTERVAL = 30;
 let scanCountdown = SCAN_INTERVAL;
 let scanTimer = null;
-let scanRunning = false;
+let scanRunning = true;
 let scanPaused = false;
 
 function startAutoScan(){
@@ -1356,14 +1356,10 @@ window.fireFromState = async function(){ resetScanCountdown(); await _origFireFr
 connectWS();
 loadIncidents();
 loadStats();
-fetchSensorState(); // Initial full sync on load
-
-// Background polling intervals
-setInterval(() => { loadStats(); loadIncidents(); }, 5000);
-setInterval(serverTick, 2000); 
-
-// FIX: Ensure this has a safe interval duration (e.g., 10000ms = 10s)
-setInterval(fetchSensorState, 10000);
+fetchSensorState();           // initial full sync (state + thresholds + modes)
+setInterval(()=>{loadStats();loadIncidents();}, 5000);
+setInterval(serverTick, 2000);          // smooth per-sensor movement for AUTO-mode sensors
+setInterval(fetchSensorState, 8000);    // periodic full resync (catches mode changes, drift)
 startAutoScan();                        // full anomaly scan every 25s
 </script>
 </body>
