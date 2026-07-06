@@ -1,3 +1,7 @@
+"""
+Shared in-memory sensor state — SINGLE SOURCE OF TRUTH.
+The server owns this. Frontend reads/writes via API only — never assumes local state is correct.
+"""
 import random
 
 LIVE_STATE = {
@@ -11,15 +15,29 @@ LIVE_STATE = {
     'BOIL-H1':  {'temp_c': 165.0, 'pressure_bar': 12.5, 'flow_m3s': 0.095},
 }
 
+# THRESHOLDS = the value at which an alert fires (red zone starts here)
 THRESHOLDS = {
-    'MOTOR-A1': {'temp_c': 85, 'vib_mm_s': 7.5, 'current_a': 45},
-    'MOTOR-B2': {'temp_c': 85, 'vib_mm_s': 7.5, 'current_a': 45},
-    'MOTOR-C3': {'temp_c': 85, 'vib_mm_s': 7.5, 'current_a': 45},
-    'PUMP-D1':  {'temp_c': 70, 'pressure_bar': 12, 'flow_m3s': 0.05},
-    'PUMP-E2':  {'temp_c': 70, 'pressure_bar': 12, 'flow_m3s': 0.05},
-    'COMP-F1':  {'temp_c': 95, 'pressure_psi': 150, 'vib_mm_s': 5.0},
-    'CONV-G1':  {'temp_c': 60, 'speed_m_s': 1.2, 'current_a': 30},
-    'BOIL-H1':  {'temp_c': 180, 'pressure_bar': 16, 'flow_m3s': 0.08},
+    'MOTOR-A1': {'temp_c': 85,  'vib_mm_s': 7.5, 'current_a': 45},
+    'MOTOR-B2': {'temp_c': 85,  'vib_mm_s': 7.5, 'current_a': 45},
+    'MOTOR-C3': {'temp_c': 85,  'vib_mm_s': 7.5, 'current_a': 45},
+    'PUMP-D1':  {'temp_c': 70,  'pressure_bar': 12.0, 'flow_m3s': 0.05},
+    'PUMP-E2':  {'temp_c': 70,  'pressure_bar': 12.0, 'flow_m3s': 0.05},
+    'COMP-F1':  {'temp_c': 95,  'pressure_psi': 150.0, 'vib_mm_s': 5.0},
+    'CONV-G1':  {'temp_c': 60,  'speed_m_s': 1.2, 'current_a': 30},
+    'BOIL-H1':  {'temp_c': 180, 'pressure_bar': 16.0, 'flow_m3s': 0.08},
+}
+
+# WARN_THRESHOLDS = early warning zone (yellow) — 85% of alert threshold
+# For low-is-bad metrics (flow, speed): warn at 130% of threshold (still above but getting close)
+WARN_THRESHOLDS = {
+    'MOTOR-A1': {'temp_c': 72,  'vib_mm_s': 6.0, 'current_a': 38},
+    'MOTOR-B2': {'temp_c': 72,  'vib_mm_s': 6.0, 'current_a': 38},
+    'MOTOR-C3': {'temp_c': 72,  'vib_mm_s': 6.0, 'current_a': 38},
+    'PUMP-D1':  {'temp_c': 60,  'pressure_bar': 10.0, 'flow_m3s': 0.065},
+    'PUMP-E2':  {'temp_c': 60,  'pressure_bar': 10.0, 'flow_m3s': 0.065},
+    'COMP-F1':  {'temp_c': 81,  'pressure_psi': 127.0, 'vib_mm_s': 4.0},
+    'CONV-G1':  {'temp_c': 51,  'speed_m_s': 1.5, 'current_a': 25},
+    'BOIL-H1':  {'temp_c': 153, 'pressure_bar': 13.5, 'flow_m3s': 0.095},
 }
 
 METRIC_CONFIG = {
@@ -44,6 +62,9 @@ def get_state(sensor_id: str) -> dict:
 
 def get_all_states() -> dict:
     return {sid: dict(vals) for sid, vals in LIVE_STATE.items()}
+
+def get_warn_thresholds() -> dict:
+    return {sid: dict(vals) for sid, vals in WARN_THRESHOLDS.items()}
 
 def set_metric(sensor_id: str, metric: str, value: float):
     if sensor_id in LIVE_STATE and metric in LIVE_STATE[sensor_id]:
