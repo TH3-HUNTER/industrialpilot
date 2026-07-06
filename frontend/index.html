@@ -1123,7 +1123,7 @@ function renderSliderPanel(){
     const okPct    = isLow ? warnPct : warnPct;
     const wPct     = isLow ? alertPct : alertPct;
     const thPct    = t ? alertPct : null;
-    const wt  = sensorWarnThresholds[sid]?.[metric];
+    //const wt  = sensorWarnThresholds[sid]?.[metric];
     const cls   = sliderColorClass(metric, value, t, wt);
     return `
     <div class="slider-metric" id="sm-${sid}-${metric}">
