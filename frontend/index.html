@@ -871,61 +871,93 @@ function downloadCSV(){
 }
 
 // ── Equipment reference ────────────────────────────────────────────────
-function renderEquipmentPage(){
-  const el=document.getElementById('eqPage');
-  el.innerHTML = Object.entries(EQUIPMENT).map(([id,eq])=>{
-    const specRows    = Object.entries(eq.specs).map(([k,v])=>
-      `<tr><td class="eq-k">${k.replace(/_/g,' ')}</td><td class="eq-v">${v}</td></tr>`).join('');
-    const normalRows  = Object.entries(eq.normal).map(([k,v])=>
-      `<tr><td class="eq-k">${k.replace(/_/g,' ')}</td><td class="eq-v" style="color:var(--green)">${v}</td></tr>`).join('');
-    const warnRows    = Object.entries(eq.warn).map(([k,v])=>
-      `<tr><td class="eq-k">${k.replace(/_/g,' ')}</td><td class="eq-v" style="color:var(--yellow)">${v}</td></tr>`).join('');
-    const alertRows   = Object.entries(eq.alert).map(([k,v])=>
-      `<tr><td class="eq-k">${k.replace(/_/g,' ')}</td><td class="eq-v" style="color:var(--orange)">${v}</td></tr>`).join('');
-    const critRows    = Object.entries(eq.critical).map(([k,v])=>
-      `<tr><td class="eq-k">${k.replace(/_/g,' ')}</td><td class="eq-v" style="color:var(--red);font-size:11px">${v}</td></tr>`).join('');
-    const faultChips  = eq.faults.map(f=>`<span class="fault-chip">${f}</span>`).join('');
-    return `
-    <div class="eq-card">
-      <div class="eq-header">
-        <div>
-          <div class="eq-id">${id}</div>
-          <div class="eq-fullname">${eq.fullName}</div>
-          <div class="eq-type">${eq.type} · ${eq.zone}</div>
+function renderEquipmentPage() {
+  const container = document.getElementById('eqPage');
+  if (!container) return;
+  
+  let html = '';
+  // EQUIPMENT is now the authoritative global dictionary object
+  for (let id in EQUIPMENT) {
+    const machine = EQUIPMENT[id];
+    const specs = machine.specs;
+    const normal = machine.normal;
+    const warns = machine.warn;
+    const alerts = machine.alert;
+    const critical = machine.critical;
+    
+    // 1. Render Technical Datasheet Specs Rows
+    let specsRows = `
+      <div class="eq-row"><span class="eq-label">Classification</span><span class="eq-val">${machine.type}</span></div>
+      <div class="eq-row"><span class="eq-label">Location Arena</span><span class="eq-val">${machine.zone}</span></div>
+    `;
+    for (let key in specs) {
+      const label = key.replace(/_/g, ' ').toUpperCase();
+      specsRows += `
+        <div class="eq-row">
+          <span class="eq-label">${label}</span>
+          <span class="eq-val">${specs[key]}</span>
+        </div>`;
+    }
+
+    // 2. Render Calibrated Operational Tolerances Side by Side
+    let thresholdRows = '';
+    for (let metric in warns) {
+      // Create user-friendly labels out of metric codes if METRIC_CONFIG isn't present
+      const labelName = metric.replace(/_/g, ' ').toUpperCase();
+      const normRange = normal[metric] || 'N/A';
+      
+      thresholdRows += `
+        <div class="eq-row" style="flex-direction: column; align-items: flex-start; gap: 4px; padding: 8px 0; border-bottom: 1px solid rgba(30,45,69,.5);">
+          <span class="eq-label" style="font-weight: 700; color: var(--accent);">${labelName}</span>
+          <div style="display: flex; width: 100%; justify-content: space-between; font-size: 11px; gap: 8px;">
+            <span>🟢 Normal: <span class="eq-val">${normRange}</span></span>
+            <span>🟡 Warn: <span class="eq-val" style="color:var(--yellow)">${warns[metric]}</span></span>
+            <span>🔴 Alert: <span class="eq-val" style="color:var(--red)">${alerts[metric]}</span></span>
+          </div>
+          <div style="font-size: 10.5px; color: var(--muted); font-style: italic; margin-top: 2px;">
+            💥 Critical limit: ${critical[metric] || 'System Shutdown Execution'}
+          </div>
+        </div>`;
+    }
+
+    // 3. Render Possible Fault Codes Chips
+    let faultChips = '';
+    if (machine.faults && machine.faults.length > 0) {
+      machine.faults.forEach(f => {
+        faultChips += `<span class="fault-chip">${f}</span>`;
+      });
+    } else {
+      faultChips = '<span style="font-size:12px; color:var(--muted)">No fault maps assigned.</span>';
+    }
+
+    html += `
+      <div class="eq-card">
+        <div class="eq-header">
+          <div>
+            <span class="eq-id">${id}</span>
+            <div class="eq-fullname">${machine.fullName}</div>
+          </div>
         </div>
-        <button onclick="document.getElementById('simSensor').value='${id}';document.getElementById('sliderSensor').value='${id}';switchTab('dash',document.querySelectorAll('.tab')[0])" style="background:var(--accent);color:#fff;border:none;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Target →</button>
+        <div class="eq-body">
+          <div class="eq-section">
+            <h4>🔩 Machine Technical Specifications</h4>
+            ${specsRows}
+          </div>
+          <div class="eq-section">
+            <h4>⚠️ Operational Tolerances & Safety Zones</h4>
+            ${thresholdRows}
+          </div>
+          <div class="eq-section">
+            <h4>🏷️ Mapped System Fault Profiles</h4>
+            <div style="margin-bottom:12px;">${faultChips}</div>
+            <h4>🔧 Preventative Maintenance Protocol</h4>
+            <div style="font-size:11.5px; color:var(--text); line-height:1.5; font-family:var(--mono);">${machine.maintenance || 'N/A'}</div>
+          </div>
+        </div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:0;border-top:1px solid var(--border)">
-
-        <div style="padding:14px 16px;border-right:1px solid var(--border)">
-          <div class="eq-sec-title">📐 Specifications</div>
-          <table class="eq-table">${specRows}</table>
-        </div>
-
-        <div style="padding:14px 16px;border-right:1px solid var(--border)">
-          <div class="eq-sec-title" style="color:var(--green)">✅ Normal Range</div>
-          <table class="eq-table">${normalRows}</table>
-          <div class="eq-sec-title" style="color:var(--yellow);margin-top:12px">⚠️ Warning Zone</div>
-          <table class="eq-table">${warnRows}</table>
-        </div>
-
-        <div style="padding:14px 16px;border-right:1px solid var(--border)">
-          <div class="eq-sec-title" style="color:var(--orange)">🔴 Alert Threshold</div>
-          <table class="eq-table">${alertRows}</table>
-          <div class="eq-sec-title" style="color:var(--red);margin-top:12px">☠️ Critical / Shutdown</div>
-          <table class="eq-table">${critRows}</table>
-        </div>
-
-        <div style="padding:14px 16px">
-          <div class="eq-sec-title">🔧 Known Fault Types</div>
-          <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:14px">${faultChips}</div>
-          <div class="eq-sec-title">🛠 Maintenance Schedule</div>
-          <div style="font-size:11.5px;color:var(--muted2);line-height:1.7;margin-top:6px">${eq.maintenance}</div>
-        </div>
-
-      </div>
-    </div>`;
-  }).join('');
+    `;
+  }
+  container.innerHTML = html;
 }
 // ── Tab switching ──────────────────────────────────────────────────────
 function switchTab(name,el){
