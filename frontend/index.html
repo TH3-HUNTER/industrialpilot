@@ -1353,13 +1353,34 @@ const _origFireFromState = fireFromState;
 window.fireFromState = async function(){ resetScanCountdown(); await _origFireFromState(); };
 
 // ── Init ───────────────────────────────────────────────────────────────
-connectWS();
-loadIncidents();
-loadStats();
-fetchSensorState();           // initial full sync (state + thresholds + modes)
-setInterval(()=>{loadStats();loadIncidents();}, 5000);
-setInterval(serverTick, 2000);          // smooth per-sensor movement for AUTO-mode sensors
-setInterval(fetchSensorState, 8000);    // periodic full resync (catches mode changes, drift)
+// ── Safe Init Sequence ──────────────────────────────────────────────────
+(async function initControlCenter() {
+  // 1. Try connecting live updates safely without blocking UI rendering
+  try {
+    if (typeof connectWS === 'function') {
+      connectWS();
+    }
+  } catch(e) {
+    console.error("WebSocket connection failed to initialize:", e);
+    if (typeof addLog === 'function') {
+      addLog('err', 'WS Error', 'Live stream connection failed. Falling back to polling.');
+    }
+  }
+
+  // 2. Load essential authoritative control payloads
+  try { await fetchSensorState(); } catch(e) { console.error('Error syncing sensors:', e); }
+  try { await loadIncidents(); }    catch(e) { console.error('Error loading incidents:', e); }
+  try { await loadStats(); }        catch(e) { console.error('Error loading stats:', e); }
+
+  // 3. Keep intervals active for background worker loops
+  setInterval(() => {
+    loadStats();
+    loadIncidents();
+  }, 5000);
+
+  setInterval(serverTick, 2000); // smooth per-sensor movement for AUTO-mode
+  setInterval(fetchSensorState, 10000); // periodic fallback deep sync
+})();
 startAutoScan();                        // full anomaly scan every 25s
 </script>
 </body>
