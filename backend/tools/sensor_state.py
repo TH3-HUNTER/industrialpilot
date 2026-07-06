@@ -4,51 +4,50 @@ The server owns this. Frontend reads/writes via API only — never assumes local
 """
 import random
 
-LIVE_STATE = {
-    'MOTOR-A1': {'temp_c': 65.0,  'vib_mm_s': 0.40, 'current_a': 41.0},
-    'MOTOR-B2': {'temp_c': 67.0,  'vib_mm_s': 0.35, 'current_a': 42.0},
-    'MOTOR-C3': {'temp_c': 63.0,  'vib_mm_s': 0.38, 'current_a': 40.0},
-    'PUMP-D1':  {'temp_c': 50.0,  'pressure_bar': 6.5, 'flow_m3s': 0.090},
+const LIVE_STATE = {
+    'MOTOR-A1': {'temp_c': 65.0,  'vib_mm_s': 1.80, 'current_a': 41.0},   // Healthy running state (ISO Class II green zone)
+    'MOTOR-B2': {'temp_c': 67.0,  'vib_mm_s': 2.10, 'current_a': 42.0},
+    'MOTOR-C3': {'temp_c': 63.0,  'vib_mm_s': 1.65, 'current_a': 40.0},
+    'PUMP-D1':  {'temp_c': 50.0,  'pressure_bar': 6.5, 'flow_m3s': 0.090}, // Optimal flow and head pressure
     'PUMP-E2':  {'temp_c': 52.0,  'pressure_bar': 6.2, 'flow_m3s': 0.085},
-    'COMP-F1':  {'temp_c': 70.0,  'pressure_psi': 105.0, 'vib_mm_s': 0.25},
-    'CONV-G1':  {'temp_c': 45.0,  'speed_m_s': 2.10, 'current_a': 24.0},
-    'BOIL-H1':  {'temp_c': 165.0, 'pressure_bar': 12.5, 'flow_m3s': 0.095},
-}
+    'COMP-F1':  {'temp_c': 78.0,  'pressure_psi': 105.0, 'vib_mm_s': 1.50}, // Standard operating compressor temp
+    'CONV-G1':  {'temp_c': 42.0,  'speed_m_s': 2.10, 'current_a': 24.0},   // Belt moving at rated pace
+    'BOIL-H1':  {'temp_c': 193.0, 'pressure_bar': 12.5, 'flow_m3s': 0.095}, // Saturated steam thermal equilibrium
+};
 
-# THRESHOLDS = the value at which an alert fires (red zone starts here)
-THRESHOLDS = {
-    'MOTOR-A1': {'temp_c': 85,  'vib_mm_s': 7.5, 'current_a': 45},
-    'MOTOR-B2': {'temp_c': 85,  'vib_mm_s': 7.5, 'current_a': 45},
-    'MOTOR-C3': {'temp_c': 85,  'vib_mm_s': 7.5, 'current_a': 45},
-    'PUMP-D1':  {'temp_c': 70,  'pressure_bar': 12.0, 'flow_m3s': 0.05},
-    'PUMP-E2':  {'temp_c': 70,  'pressure_bar': 12.0, 'flow_m3s': 0.05},
-    'COMP-F1':  {'temp_c': 95,  'pressure_psi': 150.0, 'vib_mm_s': 5.0},
-    'CONV-G1':  {'temp_c': 60,  'speed_m_s': 1.2, 'current_a': 30},
-    'BOIL-H1':  {'temp_c': 180, 'pressure_bar': 16.0, 'flow_m3s': 0.08},
-}
+// THRESHOLDS = the value at which a critical alert fires (Red Zone)
+const THRESHOLDS = {
+    'MOTOR-A1': {'temp_c': 105,  'vib_mm_s': 7.1, 'current_a': 58.0},
+    'MOTOR-B2': {'temp_c': 105,  'vib_mm_s': 7.1, 'current_a': 58.0},
+    'MOTOR-C3': {'temp_c': 105,  'vib_mm_s': 7.1, 'current_a': 58.0},
+    'PUMP-D1':  {'temp_c': 80,   'pressure_bar': 9.5, 'flow_m3s': 0.060},  // Low flow critical limit
+    'PUMP-E2':  {'temp_c': 80,   'pressure_bar': 9.5, 'flow_m3s': 0.060},
+    'COMP-F1':  {'temp_c': 110,  'pressure_psi': 130.0, 'vib_mm_s': 4.5},
+    'CONV-G1':  {'temp_c': 70,   'speed_m_s': 1.2, 'current_a': 32.0},     // Low speed indicates slippage or stall
+    'BOIL-H1':  {'temp_c': 215,  'pressure_bar': 15.5, 'flow_m3s': 0.050}, // Extreme boiler pressure trip point
+};
 
-# WARN_THRESHOLDS = early warning zone (yellow) — 85% of alert threshold
-# For low-is-bad metrics (flow, speed): warn at 130% of threshold (still above but getting close)
-WARN_THRESHOLDS = {
-    'MOTOR-A1': {'temp_c': 72,  'vib_mm_s': 6.0, 'current_a': 38},
-    'MOTOR-B2': {'temp_c': 72,  'vib_mm_s': 6.0, 'current_a': 38},
-    'MOTOR-C3': {'temp_c': 72,  'vib_mm_s': 6.0, 'current_a': 38},
-    'PUMP-D1':  {'temp_c': 60,  'pressure_bar': 10.0, 'flow_m3s': 0.065},
-    'PUMP-E2':  {'temp_c': 60,  'pressure_bar': 10.0, 'flow_m3s': 0.065},
-    'COMP-F1':  {'temp_c': 81,  'pressure_psi': 127.0, 'vib_mm_s': 4.0},
-    'CONV-G1':  {'temp_c': 51,  'speed_m_s': 1.5, 'current_a': 25},
-    'BOIL-H1':  {'temp_c': 153, 'pressure_bar': 13.5, 'flow_m3s': 0.095},
-}
+// WARN_THRESHOLDS = early warning zone (Yellow Zone)
+const WARN_THRESHOLDS = {
+    'MOTOR-A1': {'temp_c': 85,   'vib_mm_s': 4.5, 'current_a': 54.5},      // Reaching full rated load current
+    'MOTOR-B2': {'temp_c': 85,   'vib_mm_s': 4.5, 'current_a': 54.5},
+    'MOTOR-C3': {'temp_c': 85,   'vib_mm_s': 4.5, 'current_a': 54.5},
+    'PUMP-D1':  {'temp_c': 65,   'pressure_bar': 8.0, 'flow_m3s': 0.075},  // Flow dropping near restriction thresholds
+    'PUMP-E2':  {'temp_c': 65,   'pressure_bar': 8.0, 'flow_m3s': 0.075},
+    'COMP-F1':  {'temp_c': 100,  'pressure_psi': 120.0, 'vib_mm_s': 3.5},
+    'CONV-G1':  {'temp_c': 55,   'speed_m_s': 1.6, 'current_a': 28.5},     // Early deceleration tracking
+    'BOIL-H1':  {'temp_c': 205,  'pressure_bar': 14.0, 'flow_m3s': 0.070},
+};
 
-METRIC_CONFIG = {
-    'temp_c':       {'label': 'Temperature', 'unit': '°C',   'min': 20,  'max': 220},
-    'vib_mm_s':     {'label': 'Vibration',   'unit': 'mm/s', 'min': 0,   'max': 15},
+const METRIC_CONFIG = {
+    'temp_c':       {'label': 'Temperature', 'unit': '°C',   'min': 0,   'max': 250},
+    'vib_mm_s':     {'label': 'Vibration',   'unit': 'mm/s', 'min': 0,   'max': 12},
     'current_a':    {'label': 'Current',     'unit': 'A',    'min': 0,   'max': 80},
-    'pressure_bar': {'label': 'Pressure',    'unit': 'bar',  'min': 0,   'max': 25},
-    'pressure_psi': {'label': 'Pressure',    'unit': 'psi',  'min': 0,   'max': 220},
-    'flow_m3s':     {'label': 'Flow Rate',   'unit': 'm³/s', 'min': 0,   'max': 0.2},
+    'pressure_bar': {'label': 'Pressure',    'unit': 'bar',  'min': 0,   'max': 20},
+    'pressure_psi': {'label': 'Pressure',    'unit': 'psi',  'min': 0,   'max': 160},
+    'flow_m3s':     {'label': 'Flow Rate',   'unit': 'm³/s', 'min': 0,   'max': 0.15},
     'speed_m_s':    {'label': 'Belt Speed',  'unit': 'm/s',  'min': 0,   'max': 4},
-}
+};
 
 # Per-sensor mode: 'auto' (server ticks it) or 'manual' (only API writes change it)
 SENSOR_MODE = {sid: 'auto' for sid in LIVE_STATE}
