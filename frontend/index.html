@@ -1356,10 +1356,14 @@ window.fireFromState = async function(){ resetScanCountdown(); await _origFireFr
 connectWS();
 loadIncidents();
 loadStats();
-fetchSensorState();           // initial full sync (state + thresholds + modes)
-setInterval(()=>{loadStats();loadIncidents();}, 5000);
-setInterval(serverTick, 2000);          // smooth per-sensor movement for AUTO-mode sensors
-setInterval(fetchSensorState, 8000);    // periodic full resync (catches mode changes, drift)
+fetchSensorState(); // Initial full sync on load
+
+// Background polling intervals
+setInterval(() => { loadStats(); loadIncidents(); }, 5000);
+setInterval(serverTick, 2000); 
+
+// FIX: Ensure this has a safe interval duration (e.g., 10000ms = 10s)
+setInterval(fetchSensorState, 10000);
 startAutoScan();                        // full anomaly scan every 25s
 </script>
 </body>
