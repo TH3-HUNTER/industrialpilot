@@ -164,7 +164,9 @@ from backend.tools.sensor_state import (
 
 @router.get("/api/sensor-state")
 async def get_sensor_state():
+    from backend.tools.sensor_state import get_warn_thresholds
     return {"state": get_all_states(), "thresholds": THRESHOLDS,
+            "warn_thresholds": get_warn_thresholds(),
             "config": METRIC_CONFIG, "modes": get_all_modes()}
 
 @router.post("/api/sensor-state/{sensor_id}/{metric}")
