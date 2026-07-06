@@ -4,7 +4,7 @@ The server owns this. Frontend reads/writes via API only — never assumes local
 """
 import random
 
-const LIVE_STATE = {
+LIVE_STATE = {
     'MOTOR-A1': {'temp_c': 65.0,  'vib_mm_s': 1.80, 'current_a': 41.0},   // Healthy running state (ISO Class II green zone)
     'MOTOR-B2': {'temp_c': 67.0,  'vib_mm_s': 2.10, 'current_a': 42.0},
     'MOTOR-C3': {'temp_c': 63.0,  'vib_mm_s': 1.65, 'current_a': 40.0},
@@ -16,7 +16,7 @@ const LIVE_STATE = {
 };
 
 // THRESHOLDS = the value at which a critical alert fires (Red Zone)
-const THRESHOLDS = {
+THRESHOLDS = {
     'MOTOR-A1': {'temp_c': 105,  'vib_mm_s': 7.1, 'current_a': 58.0},
     'MOTOR-B2': {'temp_c': 105,  'vib_mm_s': 7.1, 'current_a': 58.0},
     'MOTOR-C3': {'temp_c': 105,  'vib_mm_s': 7.1, 'current_a': 58.0},
@@ -28,7 +28,7 @@ const THRESHOLDS = {
 };
 
 // WARN_THRESHOLDS = early warning zone (Yellow Zone)
-const WARN_THRESHOLDS = {
+WARN_THRESHOLDS = {
     'MOTOR-A1': {'temp_c': 85,   'vib_mm_s': 4.5, 'current_a': 54.5},      // Reaching full rated load current
     'MOTOR-B2': {'temp_c': 85,   'vib_mm_s': 4.5, 'current_a': 54.5},
     'MOTOR-C3': {'temp_c': 85,   'vib_mm_s': 4.5, 'current_a': 54.5},
@@ -39,7 +39,7 @@ const WARN_THRESHOLDS = {
     'BOIL-H1':  {'temp_c': 205,  'pressure_bar': 14.0, 'flow_m3s': 0.070},
 };
 
-const METRIC_CONFIG = {
+METRIC_CONFIG = {
     'temp_c':       {'label': 'Temperature', 'unit': '°C',   'min': 0,   'max': 250},
     'vib_mm_s':     {'label': 'Vibration',   'unit': 'mm/s', 'min': 0,   'max': 12},
     'current_a':    {'label': 'Current',     'unit': 'A',    'min': 0,   'max': 80},
