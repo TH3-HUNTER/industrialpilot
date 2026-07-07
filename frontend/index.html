@@ -13,8 +13,17 @@
   --text:#e2e8f0;--muted:#64748b;--muted2:#94a3b8;
   --mono:'Courier New',monospace;
 }
+html[data-theme="light"]{
+  --bg:#f4f6fb;--surface:#ffffff;--surface2:#eef1f8;--surface3:#e3e8f2;
+  --border:#d8dee9;--border2:#c3cbdb;
+  --accent:#2563eb;--cyan:#0891b2;--purple:#9333ea;
+  --red:#dc2626;--orange:#ea580c;--yellow:#ca8a04;--green:#16a34a;
+  --text:#1e293b;--muted:#94a3b8;--muted2:#64748b;
+}
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden;transition:background .2s,color .2s}
+.theme-toggle{display:flex;align-items:center;gap:6px;background:var(--surface2);border:1px solid var(--border);color:var(--muted2);padding:6px 12px;border-radius:20px;cursor:pointer;font-size:12px;margin-left:8px;transition:all .15s}
+.theme-toggle:hover{color:var(--text);border-color:var(--accent)}
 
 /* HEADER */
 header{background:var(--surface);border-bottom:1px solid var(--border);padding:0 20px;display:flex;align-items:center;justify-content:space-between;height:58px;flex-shrink:0}
@@ -237,6 +246,7 @@ input[type=range].srange::-webkit-slider-runnable-track{height:6px;border-radius
     <div class="hstat"><div class="hstat-val" style="color:var(--red)" id="hEsc">0</div><div class="hstat-lbl">Escalated</div></div>
     <div class="hstat"><div class="hstat-val" style="color:var(--yellow)" id="hRate">—</div><div class="hstat-lbl">Auto Rate</div></div>
     <div class="ws-pill"><div class="ws-dot" id="wsDot"></div><span class="ws-txt" id="wsLbl">Connecting...</span></div>
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()"><span id="themeIcon">🌙</span><span id="themeLabel">Dark</span></button>
   </div>
 </header>
 
@@ -503,6 +513,25 @@ input[type=range].srange::-webkit-slider-runnable-track{height:6px;border-radius
 </div>
 
 <script>
+// ── Theme ──────────────────────────────────────────────────────────────
+let currentTheme = 'dark';
+function applyTheme(t){
+  currentTheme = t;
+  document.documentElement.setAttribute('data-theme', t === 'light' ? 'light' : 'dark');
+  const icon = document.getElementById('themeIcon');
+  const label = document.getElementById('themeLabel');
+  if (icon)  icon.textContent  = t === 'light' ? '☀️' : '🌙';
+  if (label) label.textContent = t === 'light' ? 'Light' : 'Dark';
+  try { localStorage.setItem('industrialpilot-theme', t); } catch(e) {}
+}
+function toggleTheme(){
+  applyTheme(currentTheme === 'light' ? 'dark' : 'light');
+}
+(function initTheme(){
+  let saved = 'dark';
+  try { saved = localStorage.getItem('industrialpilot-theme') || 'dark'; } catch(e) {}
+  applyTheme(saved);
+})();
 // ── State ──────────────────────────────────────────────────────────────
 let ws, selectedId=null, allIncidents=[], curTab='dash';
 
@@ -510,81 +539,81 @@ let ws, selectedId=null, allIncidents=[], curTab='dash';
 const EQUIPMENT = {
   'MOTOR-A1':{
     fullName:'AC Induction Motor — Production Line 1', type:'Electric Motor', zone:'Zone A',
-    specs:{rated_power:'75 kW', voltage:'400 V AC (±10%)', rated_current:'138 A', speed:'1480 RPM', efficiency:'IE3 — 94.5%', insulation:'Class F (155°C max winding)', pf:'0.85', starts_per_hour:'≤6'},
-    normal:{temp_c:'55–72 °C', vib_mm_s:'0.2–6.0 mm/s', current_a:'38–38 A'},
+    specs:{rated_power:'~22 kW (derived)', voltage:'400 V AC (±10%)', rated_current:'39.1 A', speed:'1480 RPM', efficiency:'IE3 — 94.5%', insulation:'Class F (155°C max winding)', pf:'0.85', starts_per_hour:'≤6'},
+    normal:{temp_c:'54.7–72 °C', vib_mm_s:'4.6–6.0 mm/s', current_a:'28.9–38 A'},
     warn:   {temp_c:'72 °C', vib_mm_s:'6.0 mm/s', current_a:'38 A'},
     alert:  {temp_c:'85 °C', vib_mm_s:'7.5 mm/s', current_a:'45 A'},
-    critical:{temp_c:'100 °C — insulation damage', vib_mm_s:'10+ mm/s — imminent bearing failure', current_a:'55 A — thermal trip'},
+    critical:{temp_c:'97.8 °C — insulation damage risk', vib_mm_s:'8.6+ mm/s — imminent bearing failure', current_a:'51.8 A — thermal trip'},
     faults:['OVERTEMPERATURE','EXCESSIVE_VIBRATION','OVERCURRENT','BEARING_FAULT','INSULATION_FAULT'],
     maintenance:'Every 3 months: lubrication (Mobilux EP2), alignment check (≤0.05mm), insulation resistance test (>1MΩ), bearing vibration baseline',
   },
   'MOTOR-B2':{
     fullName:'AC Induction Motor — Production Line 2', type:'Electric Motor', zone:'Zone B',
-    specs:{rated_power:'75 kW', voltage:'400 V AC (±10%)', rated_current:'138 A', speed:'1480 RPM', efficiency:'IE3 — 94.5%', insulation:'Class F', pf:'0.85', starts_per_hour:'≤6'},
-    normal:{temp_c:'55–72 °C', vib_mm_s:'0.2–6.0 mm/s', current_a:'38–38 A'},
+    specs:{rated_power:'~22 kW (derived)', voltage:'400 V AC (±10%)', rated_current:'39.1 A', speed:'1480 RPM', efficiency:'IE3 — 94.5%', insulation:'Class F', pf:'0.85', starts_per_hour:'≤6'},
+    normal:{temp_c:'54.7–72 °C', vib_mm_s:'4.6–6.0 mm/s', current_a:'28.9–38 A'},
     warn:   {temp_c:'72 °C', vib_mm_s:'6.0 mm/s', current_a:'38 A'},
     alert:  {temp_c:'85 °C', vib_mm_s:'7.5 mm/s', current_a:'45 A'},
-    critical:{temp_c:'100 °C', vib_mm_s:'10+ mm/s', current_a:'55 A'},
+    critical:{temp_c:'97.8 °C', vib_mm_s:'8.6+ mm/s', current_a:'51.8 A'},
     faults:['OVERTEMPERATURE','EXCESSIVE_VIBRATION','OVERCURRENT','BEARING_FAULT','INSULATION_FAULT'],
     maintenance:'Every 3 months: lubrication, alignment, insulation test',
   },
   'MOTOR-C3':{
     fullName:'AC Induction Motor — Production Line 3', type:'Electric Motor', zone:'Zone C',
-    specs:{rated_power:'55 kW', voltage:'400 V AC (±10%)', rated_current:'103 A', speed:'1480 RPM', efficiency:'IE3 — 94.0%', insulation:'Class F', pf:'0.85', starts_per_hour:'≤6'},
-    normal:{temp_c:'55–72 °C', vib_mm_s:'0.2–6.0 mm/s', current_a:'35–38 A'},
+    specs:{rated_power:'~22 kW (derived)', voltage:'400 V AC (±10%)', rated_current:'39.1 A', speed:'1480 RPM', efficiency:'IE3 — 94.0%', insulation:'Class F', pf:'0.85', starts_per_hour:'≤6'},
+    normal:{temp_c:'54.7–72 °C', vib_mm_s:'4.6–6.0 mm/s', current_a:'28.9–38 A'},
     warn:   {temp_c:'72 °C', vib_mm_s:'6.0 mm/s', current_a:'38 A'},
     alert:  {temp_c:'85 °C', vib_mm_s:'7.5 mm/s', current_a:'45 A'},
-    critical:{temp_c:'100 °C', vib_mm_s:'10+ mm/s', current_a:'55 A'},
+    critical:{temp_c:'97.8 °C', vib_mm_s:'8.6+ mm/s', current_a:'51.8 A'},
     faults:['OVERTEMPERATURE','EXCESSIVE_VIBRATION','OVERCURRENT','BEARING_FAULT','INSULATION_FAULT'],
     maintenance:'Every 3 months: lubrication, alignment, insulation test',
   },
   'PUMP-D1':{
     fullName:'Centrifugal Cooling Water Pump', type:'Centrifugal Pump', zone:'Zone D — Cooling System',
-    specs:{rated_power:'22 kW', flow_rate:'0.05–0.12 m³/s', head:'35 m', impeller:'Bronze 280mm', seal:'Mechanical seal — water cooled', npsh:'3.2 m'},
-    normal:{temp_c:'40–60 °C', pressure_bar:'4–10 bar', flow_m3s:'0.065–0.12 m³/s'},
+    specs:{rated_power:'22 kW', flow_rate:'0.065–0.0845 m³/s (normal band)', rated_flow:'0.068 m³/s', head:'35 m', impeller:'Bronze 280mm', seal:'Mechanical seal — water cooled', npsh:'3.2 m'},
+    normal:{temp_c:'45.6–60 °C', pressure_bar:'7.6–10.0 bar', flow_m3s:'0.065–0.0845 m³/s'},
     warn:   {temp_c:'60 °C', pressure_bar:'10.0 bar', flow_m3s:'0.065 m³/s (min safe)'},
     alert:  {temp_c:'70 °C', pressure_bar:'12.0 bar', flow_m3s:'0.050 m³/s (cavitation risk)'},
-    critical:{temp_c:'80 °C — seal failure risk', pressure_bar:'15 bar — casing rupture', flow_m3s:'<0.03 m³/s — severe cavitation'},
+    critical:{temp_c:'80.5 °C — seal failure risk', pressure_bar:'13.8 bar — casing rupture risk', flow_m3s:'0.030 m³/s — severe cavitation'},
     faults:['HIGH_PRESSURE','LOW_FLOW_RATE','OVERTEMPERATURE','CAVITATION'],
     maintenance:'Monthly: seal inspection, impeller wear check, alignment. Annually: full overhaul.',
   },
   'PUMP-E2':{
     fullName:'Hydraulic Gear Pump — Hydraulic Circuit', type:'Hydraulic Pump', zone:'Zone E — Hydraulics',
-    specs:{rated_power:'30 kW', flow_rate:'0.05–0.10 m³/s', max_pressure:'16 bar', displacement:'71 cc/rev', fluid:'ISO VG 46 hydraulic oil', filter:'10 micron'},
-    normal:{temp_c:'40–60 °C', pressure_bar:'4–10 bar', flow_m3s:'0.065–0.10 m³/s'},
+    specs:{rated_power:'22 kW', flow_rate:'0.065–0.0845 m³/s (normal band)', rated_flow:'0.068 m³/s', max_pressure:'10.4 bar (rated)', displacement:'71 cc/rev', fluid:'ISO VG 46 hydraulic oil', filter:'10 micron'},
+    normal:{temp_c:'45.6–60 °C', pressure_bar:'7.6–10.0 bar', flow_m3s:'0.065–0.0845 m³/s'},
     warn:   {temp_c:'60 °C', pressure_bar:'10.0 bar', flow_m3s:'0.065 m³/s'},
     alert:  {temp_c:'70 °C', pressure_bar:'12.0 bar', flow_m3s:'0.050 m³/s'},
-    critical:{temp_c:'85 °C — oil degradation', pressure_bar:'16 bar — relief valve opens', flow_m3s:'<0.03 m³/s'},
+    critical:{temp_c:'80.5 °C — oil degradation', pressure_bar:'13.8 bar — relief valve opens', flow_m3s:'0.030 m³/s'},
     faults:['HIGH_PRESSURE','LOW_FLOW_RATE','OVERTEMPERATURE','CAVITATION'],
     maintenance:'Monthly: oil sample analysis, filter replacement, pressure check. Oil change every 2000h.',
   },
   'COMP-F1':{
     fullName:'Rotary Screw Air Compressor', type:'Air Compressor', zone:'Zone F — Air Supply',
-    specs:{rated_power:'90 kW', output_pressure:'8–13 bar', capacity:'16 m³/min', cooling:'Air-cooled', oil_type:'Synthetic compressor oil 8000h', unload_pressure:'12.5 bar'},
-    normal:{temp_c:'60–81 °C', pressure_psi:'90–127 psi', vib_mm_s:'0.1–4.0 mm/s'},
+    specs:{rated_power:'90 kW', output_pressure:'96.5–127 psi (normal band)', rated_pressure:'130.4 psi', capacity:'16 m³/min', cooling:'Air-cooled', oil_type:'Synthetic compressor oil 8000h', unload_pressure:'127 psi'},
+    normal:{temp_c:'61.6–81 °C', pressure_psi:'96.5–127 psi', vib_mm_s:'3.0–4.0 mm/s'},
     warn:   {temp_c:'81 °C', pressure_psi:'127 psi', vib_mm_s:'4.0 mm/s'},
     alert:  {temp_c:'95 °C', pressure_psi:'150 psi', vib_mm_s:'5.0 mm/s'},
-    critical:{temp_c:'110 °C — oil breakdown, bearing seizure imminent', pressure_psi:'175 psi — safety valve lifts', vib_mm_s:'8+ mm/s — rotor damage'},
+    critical:{temp_c:'109.3 °C — oil breakdown, bearing seizure imminent', pressure_psi:'172.5 psi — safety valve lifts', vib_mm_s:'5.75+ mm/s — rotor damage'},
     faults:['HIGH_PRESSURE','OVERTEMPERATURE','EXCESSIVE_VIBRATION','OIL_PRESSURE_LOW'],
     maintenance:'Every 2 months: oil/filter change, belt tension, safety valve test. Annual: full screw element inspection.',
   },
   'CONV-G1':{
     fullName:'Belt Conveyor System — Assembly Line', type:'Belt Conveyor', zone:'Zone G — Assembly Line',
-    specs:{belt_width:'800 mm', belt_speed:'1.5–2.5 m/s', max_load:'500 kg/m', drive_power:'15 kW', belt_type:'EP 400/3 rubber', take_up:'Screw tensioner'},
-    normal:{temp_c:'35–51 °C', speed_m_s:'1.5–2.5 m/s', current_a:'18–25 A'},
+    specs:{belt_width:'800 mm', belt_speed:'1.5–1.95 m/s (normal band)', rated_speed:'1.58 m/s', max_load:'500 kg/m', drive_power:'15 kW', belt_type:'EP 400/3 rubber', take_up:'Screw tensioner'},
+    normal:{temp_c:'38.8–51 °C', speed_m_s:'1.5–1.95 m/s', current_a:'19.0–25 A'},
     warn:   {temp_c:'51 °C', speed_m_s:'1.5 m/s (min safe)', current_a:'25 A'},
     alert:  {temp_c:'60 °C', speed_m_s:'1.2 m/s (slip detected)', current_a:'30 A'},
-    critical:{temp_c:'75 °C — gearbox damage', speed_m_s:'<0.8 m/s — belt stalled or jammed', current_a:'40 A — motor trip'},
+    critical:{temp_c:'69.0 °C — gearbox damage', speed_m_s:'0.72 m/s — belt stalled or jammed', current_a:'34.5 A — motor trip'},
     faults:['UNDERSPEED','BELT_SLIP','OVERTEMPERATURE','OVERCURRENT'],
     maintenance:'Weekly: belt tension, tracking, roller inspection. Monthly: gearbox oil level, drive coupling.',
   },
   'BOIL-H1':{
     fullName:'Fire-Tube Steam Boiler', type:'Steam Boiler', zone:'Zone H — Steam Plant',
-    specs:{capacity:'5,000 kg/h steam', working_pressure:'16 bar', design_pressure:'20 bar', temperature:'204 °C', fuel:'Natural Gas', efficiency:'92%', safety_valve:'Set at 17.5 bar'},
-    normal:{temp_c:'153–165 °C', pressure_bar:'10–13.5 bar', flow_m3s:'0.095–0.12 m³/s'},
-    warn:   {temp_c:'165 °C', pressure_bar:'13.5 bar', flow_m3s:'0.095 m³/s (feedwater low)'},
+    specs:{capacity:'5,000 kg/h steam', working_pressure:'10.3–13.5 bar (normal band)', design_pressure:'13.9 bar (rated)', temperature:'116.3–153 °C (normal band)', fuel:'Natural Gas', efficiency:'92%', safety_valve:'Set at 18.4 bar'},
+    normal:{temp_c:'116.3–153 °C', pressure_bar:'10.3–13.5 bar', flow_m3s:'0.095–0.1235 m³/s'},
+    warn:   {temp_c:'153 °C', pressure_bar:'13.5 bar', flow_m3s:'0.095 m³/s (feedwater low)'},
     alert:  {temp_c:'180 °C', pressure_bar:'16.0 bar', flow_m3s:'0.080 m³/s (critical low)'},
-    critical:{temp_c:'200 °C — safety valve must lift', pressure_bar:'17.5 bar — safety valve lifts', flow_m3s:'<0.04 m³/s — DRY FIRE RISK, immediate shutdown'},
+    critical:{temp_c:'207.0 °C — safety valve must lift', pressure_bar:'18.4 bar — safety valve lifts', flow_m3s:'0.048 m³/s — DRY FIRE RISK, immediate shutdown'},
     faults:['OVERPRESSURE','OVERTEMPERATURE','LOW_WATER_FLOW','FLAME_FAILURE'],
     maintenance:'Monthly: water treatment, safety valve test, blowdown. Annual: full pressure vessel inspection (certified engineer).',
   },
