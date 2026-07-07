@@ -984,7 +984,7 @@ async function loadSettings(){
     document.getElementById('settingsSystemInfo').innerHTML = `
       <div>Scan interval: <strong style="color:var(--text)">${d.scan_interval_seconds || 25}s</strong></div>
       <div>Sensors monitored: <strong style="color:var(--text)">8</strong> (motors, pumps, compressor, conveyor, boiler)</div>
-      <div>Model: <strong style="color:var(--text)">Qwen (qwen-flash)</strong></div>
+      <div>Model: <strong style="color:var(--text)">Qwen (qwen3.7-max)</strong></div>
     `;
   } catch(e) {
     document.getElementById('settingsSaveMsg').textContent = '⚠️ Could not load settings';
