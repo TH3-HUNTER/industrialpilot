@@ -982,7 +982,7 @@ async function loadSettings(){
     document.getElementById('settingsSlack').value = d.slack_webhook_url || '';
     document.getElementById('settingsConfVal').textContent = Math.round((d.confidence_threshold||0.8)*100) + '%';
     document.getElementById('settingsSystemInfo').innerHTML = `
-      <div>Scan interval: <strong style="color:var(--text)">${d.scan_interval_seconds || 25}s</strong></div>
+      <div>Scan interval: <strong style="color:var(--text)">${d.scan_interval_seconds || 30}s</strong></div>
       <div>Sensors monitored: <strong style="color:var(--text)">8</strong> (motors, pumps, compressor, conveyor, boiler)</div>
       <div>Model: <strong style="color:var(--text)">Qwen (qwen3.7-max)</strong></div>
     `;
