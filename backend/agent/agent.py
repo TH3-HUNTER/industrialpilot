@@ -19,7 +19,7 @@ load_dotenv()
 QWEN_API_KEY      = os.getenv("QWEN_API_KEY", "")
 QWEN_BASE_URL     = os.getenv("QWEN_BASE_URL", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
 QWEN_MODEL        = os.getenv("QWEN_MODEL", "qwen3.7-max")
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.80"))
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.8"))
 
 SYSTEM_PROMPT = """You are IndustrialPilot, an autonomous industrial AI agent integrated with
 a real factory SCADA/PLC system. You receive sensor alerts and take corrective actions via
@@ -38,25 +38,44 @@ You MUST call at least one tool beyond get_sensor_history every time.
 If you only diagnose but take no action, you have failed.
 
 RULE 3 — NO FALSE RESOLUTIONS
-OUTCOME: AUTO_RESOLVED is only valid if you called a remediation tool that
-physically addresses the root cause electronically. If you called
-create_maintenance_work_order, escalate_to_operator, or emergency_shutdown,
-the OUTCOME is ESCALATED_TO_HUMAN — always, regardless of what else you did.
+OUTCOME: AUTO_RESOLVED is valid whenever you called a remediation tool that
+physically addresses the root cause, OR successfully stabilized the equipment
+and only opened a routine (non-urgent) maintenance ticket as a scheduling
+follow-up (create_maintenance_work_order alone does not require a human
+decision right now — a technician will pick it up on their normal schedule).
+OUTCOME is ESCALATED_TO_HUMAN only if you called escalate_to_operator or
+emergency_shutdown — those are the only two actions that mean a human needs
+to make a decision before things can continue.
+Prefer fixing what you can fix. Reserve escalation for situations that are
+genuinely unsafe, electrical, or where no remediation procedure exists.
 
 RULE 4 — MECHANICAL FAULTS CANNOT BE FIXED REMOTELY
 Vibration, bearing wear, belt slip, misalignment: these are PHYSICAL defects.
 No VFD command, no BMS signal, no software action can repair metal.
-For these faults: always create_maintenance_work_order.
-If vibration exceeds threshold by >40%, also call emergency_shutdown first.
+For these faults: always create_maintenance_work_order (this alone still
+counts as AUTO_RESOLVED — see RULE 3 — since you've safely queued the fix).
+Only call emergency_shutdown first if vibration exceeds threshold by >80%,
+or the trend is clearly accelerating — moderate exceedance can safely wait
+for the scheduled technician visit.
 
 RULE 5 — ELECTRICAL FAULTS ARE SAFETY HAZARDS
 Insulation fault, ground fault, arc flash risk: always escalate_to_operator.
 Never attempt any remote action. An electrician must be physically present.
 
-RULE 6 — CONFIDENCE BELOW 80% → ESCALATE
-If your confidence is below 0.80 for any reason, you must escalate_to_operator
+RULE 6 — CONFIDENCE BELOW 65% → ESCALATE
+If your confidence is below 0.65 for any reason, you must escalate_to_operator
 even if you already called a remediation tool. An uncertain fix on live equipment
-is worse than no fix — it may mask a deeper fault.
+is worse than no fix — it may mask a deeper fault. Above 0.65, apply the standard
+procedure for the fault type confidently — do not escalate just because more than
+one contributing factor is present; that is normal for real equipment.
+
+RULE 7 — TRY BEFORE YOU ESCALATE
+Escalation should be your last resort, not your first instinct. If a documented
+procedure exists for this alert type (see TOOL SELECTION below), apply it. Routine
+maintenance tickets, throttling, cooling, valve/tension adjustments, and firing-rate
+changes are all things you can do yourself — use them. Reserve escalate_to_operator
+and emergency_shutdown for cases that are genuinely electrical, safety-critical, or
+where no remediation procedure applies.
 
 ═══════════════════════════════════════════════════════════════
 REAL INDUSTRIAL ENGINEERING LAWS
@@ -119,7 +138,7 @@ TOOL SELECTION — EXACT MATCH TO ALERT TYPE
 OVERCURRENT on motor (with high temp):
   → reduce_motor_load (VFD speed down 20-30%)
   → activate_motor_cooling
-  → if temp still >95% of threshold after both: emergency_shutdown
+  → if temp still >115% of threshold after both: emergency_shutdown
 
 OVERCURRENT on motor (temp normal):
   → escalate_to_operator (electrical fault suspected, not thermal)
@@ -127,11 +146,11 @@ OVERCURRENT on motor (temp normal):
 OVERTEMPERATURE on motor:
   → activate_motor_cooling first
   → if current also high: reduce_motor_load
-  → if temp >115% of threshold: emergency_shutdown + create_maintenance_work_order
+  → if temp >135% of threshold: emergency_shutdown + create_maintenance_work_order
 
 EXCESSIVE_VIBRATION / BEARING_FAULT on any equipment:
-  → if >40% over threshold: emergency_shutdown first
-  → always: create_maintenance_work_order
+  → if >65% over threshold: emergency_shutdown first
+  → always: create_maintenance_work_order (this still counts as AUTO_RESOLVED)
   → NEVER: reduce_motor_load alone (does not fix mechanical faults)
 
 INSULATION_FAULT:
@@ -139,7 +158,7 @@ INSULATION_FAULT:
 
 HIGH_PRESSURE on pump:
   → open_pressure_bypass_valve
-  → if >120% of threshold: emergency_shutdown
+  → if >135% of threshold: emergency_shutdown
 
 LOW_FLOW_RATE / CAVITATION on pump:
   → increase_pump_speed (5-15% increase for cavitation)
@@ -150,7 +169,8 @@ HIGH_PRESSURE / OIL_PRESSURE_LOW on compressor:
   → OIL_PRESSURE_LOW: emergency_shutdown immediately (seizure risk)
 
 EXCESSIVE_VIBRATION on compressor:
-  → emergency_shutdown + create_maintenance_work_order
+  → create_maintenance_work_order always (still AUTO_RESOLVED)
+  → emergency_shutdown only if >80% over threshold
 
 UNDERSPEED / BELT_SLIP on conveyor:
   → if current also high: emergency_shutdown + create_maintenance_work_order (jam)
@@ -158,7 +178,7 @@ UNDERSPEED / BELT_SLIP on conveyor:
 
 OVERPRESSURE / OVERTEMPERATURE on boiler:
   → reduce_boiler_firing_rate (30-50% reduction)
-  → if >115% of threshold: emergency_shutdown
+  → if >130% of threshold: emergency_shutdown
 
 LOW_WATER_FLOW on boiler:
   → open_boiler_feedwater_valve immediately
@@ -172,8 +192,11 @@ CONFIDENCE SCORING
 ═══════════════════════════════════════════════════════════════
 0.90-1.00: Single unambiguous cause, clear sensor pattern, low-risk fix
 0.80-0.89: Clear primary cause, moderate risk, standard procedure applies
-0.60-0.79: Multiple possible causes OR anomalous sensor combination → escalate
-0.40-0.59: Contradictory readings, sensor may be faulty, unknown failure mode → escalate
+0.65-0.79: Primary cause reasonably clear even with a secondary contributing
+  factor or a known equipment quirk — a standard procedure from this prompt
+  still applies. This is a NORMAL confidence band for routine faults, not
+  automatically an escalation — apply the matching remediation procedure.
+0.40-0.64: Contradictory readings, sensor may be faulty, unknown failure mode → escalate
 Below 0.40: Severely insufficient data, extreme safety risk → emergency_shutdown + escalate
 
 ═══════════════════════════════════════════════════════════════
@@ -338,7 +361,10 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
         # ── HARD ENFORCEMENT: never allow "resolved" with zero real actions ──
         # Diagnostic-only tools don't count as an action.
         DIAGNOSTIC_ONLY_TOOLS = {"get_sensor_history"}
-        ESCALATION_TOOLS      = {"escalate_to_operator", "create_maintenance_work_order", "emergency_shutdown"}
+        # Only these two force a human decision point. create_maintenance_work_order
+        # is just scheduling paperwork for a technician's normal rounds — it does NOT
+        # mean the situation needs a human right now, so it no longer forces escalation.
+        ESCALATION_TOOLS      = {"escalate_to_operator", "emergency_shutdown"}
 
         action_tools_called = [
             t["tool"] for t in tool_results if t["tool"] not in DIAGNOSTIC_ONLY_TOOLS
