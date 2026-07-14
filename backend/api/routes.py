@@ -85,6 +85,16 @@ async def export_csv():
     # Use \r\n line endings (CSV standard) and quote everything that might contain commas
     writer = csv.writer(buf, quoting=csv.QUOTE_MINIMAL)
 
+    def clean(val) -> str:
+        """Flatten any embedded newlines/carriage returns into a single space so every
+        incident stays on exactly one physical line — raw text stays readable even
+        without a CSV-aware viewer, and the model's multi-line reasoning/report text
+        never breaks a row in two."""
+        s = "" if val is None else str(val)
+        return " ".join(s.split())  # .split() with no args splits on any run of
+        # whitespace (including \n, \r, \t, multiple blank lines) and drops empties,
+        # so this also collapses accidental double-spacing from blank lines
+
     # Human-readable headers, grouped in a logical reading order
     writer.writerow([
         "Date", "Time",
@@ -103,22 +113,22 @@ async def export_csv():
         time_part = time_part[:8]  # HH:MM:SS, drop microseconds
 
         writer.writerow([
-            date_part,
-            time_part,
-            r.get("alert_id", ""),
-            r.get("sensor_id", ""),
-            r.get("location", ""),
-            r.get("alert_type", ""),
-            (r.get("severity") or "").upper(),
-            r.get("reading_value", ""),
-            r.get("threshold", ""),
-            r.get("reading_unit", ""),
-            r.get("root_cause", ""),
-            r.get("confidence_pct", ""),
-            (r.get("status") or "").replace("_", " ").upper(),
-            r.get("actions_taken", ""),
-            (r.get("operator_decision") or "").replace("_", " ").upper(),
-            r.get("operator_notes", ""),
+            clean(date_part),
+            clean(time_part),
+            clean(r.get("alert_id", "")),
+            clean(r.get("sensor_id", "")),
+            clean(r.get("location", "")),
+            clean(r.get("alert_type", "")),
+            clean((r.get("severity") or "").upper()),
+            clean(r.get("reading_value", "")),
+            clean(r.get("threshold", "")),
+            clean(r.get("reading_unit", "")),
+            clean(r.get("root_cause", "")),
+            clean(r.get("confidence_pct", "")),
+            clean((r.get("status") or "").replace("_", " ").upper()),
+            clean(r.get("actions_taken", "")),
+            clean((r.get("operator_decision") or "").replace("_", " ").upper()),
+            clean(r.get("operator_notes", "")),
         ])
 
     buf.seek(0)
