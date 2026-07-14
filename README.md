@@ -73,7 +73,7 @@ http://localhost:8000
 |---|---|---|
 | `QWEN_API_KEY` | Your Qwen Cloud API key | Yes |
 | `QWEN_BASE_URL` | Qwen Cloud endpoint | Yes (default provided) |
-| `QWEN_MODEL` | Model to use, e.g. `qwen-flash` or `qwen-plus` | Yes |
+| `QWEN_MODEL` | Model to use, e.g. `qwen-flash` or `qwen3.7-plus` | Yes |
 | `CONFIDENCE_THRESHOLD` | Auto-remediation cutoff (default `0.80`) | No |
 | `OPERATOR_EMAIL` | Comma-separated technician emails for escalations | No (also editable live in Settings tab) |
 | `SENDGRID_API_KEY` | Enables real email sending via SendGrid | No — without it, escalations are logged to console instead |
@@ -133,7 +133,7 @@ git clone https://github.com/TH3-HUNTER/industrialpilot.git
 cd industrialpilot
 pip install -r requirements.txt
 cp .env.example .env
-nano .env   # add your real Qwen API key
+nano .env   # add your real  API key
 python main.py
 ```
 
