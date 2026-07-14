@@ -1307,7 +1307,7 @@ async function flashSensorFix(sensorId, changes){
 }
 
 // ═══════════════════════════════════════════════════════
-// AUTO-SCAN — agent scans every 25 seconds, smooth countdown bar
+// AUTO-SCAN — agent scans every 30 seconds, smooth countdown bar
 // ═══════════════════════════════════════════════════════
 const SCAN_INTERVAL = 30;
 let scanCountdown = SCAN_INTERVAL;
@@ -1394,7 +1394,7 @@ fetchSensorState();           // initial full sync (state + thresholds + modes)
 setInterval(()=>{loadStats();loadIncidents();}, 5000);
 setInterval(serverTick, 2000);          // smooth per-sensor movement for AUTO-mode sensors
 setInterval(fetchSensorState, 8000);    // periodic full resync (catches mode changes, drift)
-startAutoScan();                        // full anomaly scan every 25s
+startAutoScan();                        // full anomaly scan every 30s
 </script>
 </body>
 </html>
