@@ -437,6 +437,47 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
             or below_threshold
         )
 
+        # ── DETERMINISTIC BACKSTOP: don't trust the model's stated confidence alone ──
+        # The model is supposed to raise its confidence after seeing a fix verified by
+        # sensor_changes, but LLMs are inconsistent about actually doing this. Instead of
+        # relying on that, check the real numbers ourselves against the real THRESHOLDS.
+        from backend.tools.sensor_state import THRESHOLDS as SENSOR_THRESHOLDS
+        LOW_ALERT_METRICS = {"flow_m3s", "speed_m_s"}  # for these, LOW is bad, so "fixed" means value >= threshold
+
+        def _readings_verified_safe() -> bool:
+            thresh = SENSOR_THRESHOLDS.get(sensor_id, {})
+            saw_any_change = False
+            for t in tool_results:
+                changes = (t.get("result") or {}).get("sensor_changes") or {}
+                for metric, delta in changes.items():
+                    to_val = delta.get("to") if isinstance(delta, dict) else None
+                    if to_val is None or metric not in thresh:
+                        continue
+                    saw_any_change = True
+                    is_low_alert = metric in LOW_ALERT_METRICS
+                    still_bad = (to_val < thresh[metric]) if is_low_alert else (to_val > thresh[metric])
+                    if still_bad:
+                        return False  # at least one reading never actually came back in range
+            return saw_any_change  # True only if we saw real changes AND none were still bad
+
+        # Rule 3/4 exemption: if the ONLY action taken was a maintenance ticket (mechanical
+        # fault correctly handled per Rule 4), that is ALREADY a valid AUTO_RESOLVED outcome
+        # by design — there is no remote reading to verify, so the confidence gate shouldn't
+        # apply to it at all.
+        TICKET_ONLY_ACTIONS = {"create_maintenance_work_order"}
+        ticket_only_resolution = bool(action_tools_called) and all(
+            t in TICKET_ONLY_ACTIONS for t in action_tools_called
+        )
+
+        model_chose_escalation = (
+            parsed.get("outcome", "").upper() == "ESCALATED_TO_HUMAN"
+            or any(t["tool"] in ESCALATION_TOOLS for t in tool_results)
+        )
+        verified_fix = _readings_verified_safe()
+        if (ticket_only_resolution or verified_fix) and not model_chose_escalation:
+            below_threshold = False
+            escalated = False
+
         if below_threshold and not any(t["tool"] in ESCALATION_TOOLS for t in tool_results):
             # A remediation tool WAS called, but confidence didn't meet the bar.
             # Notify the operator that an action was taken under uncertainty — they
