@@ -54,5 +54,5 @@ def get_deployment_info() -> dict:
             "endpoint at the public_url confirms the backend is deployed and "
             "reachable on Alibaba Cloud infrastructure."
         ),
-        "qwen_model_in_use": os.getenv("QWEN_MODEL", "qwen-flash"),
+        "qwen_model_in_use": os.getenv("QWEN_MODEL", "qwen3.7-plus"),
     }
