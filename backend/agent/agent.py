@@ -504,20 +504,16 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
         confidence = parsed.get("confidence", 0.5)
 
         # ── ESCALATION IS DRIVEN BY FAULT TYPE, NOT A CONFIDENCE NUMBER ──
-        # Escalated only if a human genuinely needs to go physically do something:
-        #  1. The model itself decided ESCALATED_TO_HUMAN (electrical faults per Rule 5,
-        #     imminent hazards, or a diagnosis it genuinely isn't sure enough about to act on)
-        #  2. escalate_to_operator or emergency_shutdown was actually called
-        # A successful remote fix (VFD speed, valve, unloader, firing rate, etc.) is
-        # AUTO_RESOLVED regardless of the stated confidence number — confidence is still
-        # reported for the audit trail, it just no longer forces a human review on its own.
-        ESCALATION_TOOLS = {"escalate_to_operator", "emergency_shutdown"}  # (same set as above)
+        # Escalated only if a human genuinely needs to go physically do something. This is
+        # decided from a HARD FACT — was escalate_to_operator or emergency_shutdown actually
+        # called — not from the model's free-text "OUTCOME:" line. That line is fragile: if
+        # the model's final message ever skips the exact tag (e.g. it just writes a casual
+        # completion summary after several tool calls), a text parse would silently fall
+        # back to a default and could force an escalation with no relation to what actually
+        # happened. A real tool call is not fragile in that way, so that's the only signal
+        # used here.
         TICKET_ONLY_ACTIONS = {"create_maintenance_work_order"}
-
-        escalated = (
-            parsed.get("outcome", "").upper() == "ESCALATED_TO_HUMAN"
-            or any(t["tool"] in ESCALATION_TOOLS for t in tool_results)
-        )
+        escalated = any(t["tool"] in ESCALATION_TOOLS for t in tool_results)
 
         from backend.tools.sensor_state import THRESHOLDS as SENSOR_THRESHOLDS
         LOW_ALERT_METRICS = {"flow_m3s", "speed_m_s"}  # for these, LOW is bad
@@ -619,24 +615,33 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
                 pass
 
     def _parse_summary(self, text: str) -> dict:
+        # Outcome default no longer matters for the escalation decision (that's now based
+        # purely on real tool calls, see process_alert), but keep a sensible default here
+        # for display/logging purposes only.
         result = {"root_cause": "Analysis complete", "confidence": 0.75,
                   "actions_taken": [], "outcome": "ESCALATED_TO_HUMAN", "next_steps": ""}
         if not text:
             return result
-        for line in text.split("\n"):
-            if "ROOT_CAUSE:" in line:
-                result["root_cause"] = line.split("ROOT_CAUSE:", 1)[-1].strip()
-            elif "CONFIDENCE:" in line:
+        for raw_line in text.split("\n"):
+            line = raw_line.strip().strip("*").strip()
+            upper = line.upper()
+            if "ROOT_CAUSE:" in upper:
+                idx = upper.find("ROOT_CAUSE:")
+                result["root_cause"] = line[idx + len("ROOT_CAUSE:"):].strip()
+            elif "CONFIDENCE:" in upper:
+                idx = upper.find("CONFIDENCE:")
                 try:
-                    v = line.split("CONFIDENCE:", 1)[-1].strip().replace("%","")
+                    v = line[idx + len("CONFIDENCE:"):].strip().replace("%", "")
                     val = float(v)
                     result["confidence"] = val / 100 if val > 1 else val
                 except Exception:
                     pass
-            elif "OUTCOME:" in line:
-                result["outcome"] = line.split("OUTCOME:", 1)[-1].strip()
-            elif "NEXT_STEPS:" in line:
-                result["next_steps"] = line.split("NEXT_STEPS:", 1)[-1].strip()
+            elif "OUTCOME:" in upper:
+                idx = upper.find("OUTCOME:")
+                result["outcome"] = line[idx + len("OUTCOME:"):].strip()
+            elif "NEXT_STEPS:" in upper:
+                idx = upper.find("NEXT_STEPS:")
+                result["next_steps"] = line[idx + len("NEXT_STEPS:"):].strip()
         return result
 
     def _build_report(self, alert_id, alert, tool_results, reasoning, summary) -> str:
