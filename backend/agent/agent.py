@@ -1,612 +1,593 @@
 """
-IndustrialPilot — Qwen Agent
-Autonomous reasoning engine for factory incident response.
+IndustrialPilot — Deterministic Diagnostic & Decision Engine
+══════════════════════════════════════════════════════════════════════════
+REWORK NOTE: every previous version of this file asked an LLM to read ~600
+lines of rules and reliably (a) classify the fault, (b) compute a numeric
+confidence, and (c) decide whether to escalate — every single time, with zero
+drift. That's why the same pump problem could resolve once and escalate the
+next: the *decision* depended on whether one run of free text happened to
+match an exact format.
+
+This version moves the decision itself out of the LLM entirely:
+
+  1. SCAN    — read the real live sensor values and real configured
+               thresholds (not text the model remembers).
+  2. DIAGNOSE — classify the fault with plain Python comparisons against
+               those real numbers (mechanical / electrical / operational /
+               hard-break / imminent), using the exact signature logic we
+               built together.
+  3. CONFIDENCE — a real formula based on how much margin the reading has,
+               not a lookup table and not something an LLM eyeballs.
+  4. DECIDE  — execute the matching action (lower current/load/speed, open
+               a valve, adjust firing rate, etc.) or force a shutdown
+               (every parameter to a safe/zero baseline) + call maintenance,
+               based on the fault category — not a stated confidence number.
+  5. VERIFY  — after acting, check the real resulting readings against the
+               real thresholds. If it didn't work, escalate — don't just
+               trust that it did.
+  6. NARRATE — Qwen is called exactly once, only to turn the above into a
+               readable paragraph for the incident report. It cannot change
+               what already happened to the machine, and if the API call
+               fails or times out, the incident still completes normally
+               with a plain-text fallback narrative.
+
+This is intentionally NOT "smarter" than a good engineer's checklist — it's
+supposed to be exactly as predictable as one, every single time.
 """
 import os
 import json
 import uuid
+import asyncio
 from datetime import datetime
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
-from backend.tools.tools import TOOL_DEFINITIONS, execute_tool
+
+from backend.tools.tools import execute_tool
+from backend.tools.sensor_state import get_state, THRESHOLDS, WARN_THRESHOLDS
 from backend.db.database import (
-    insert_incident, update_incident_status,
-    log_decision, save_report
+    insert_incident, update_incident_status, log_decision, save_report
 )
 
 load_dotenv()
 
-QWEN_API_KEY      = os.getenv("QWEN_API_KEY", "")
-QWEN_BASE_URL     = os.getenv("QWEN_BASE_URL", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
-QWEN_MODEL        = os.getenv("QWEN_MODEL", "qwen3.7-plus")
+QWEN_API_KEY  = os.getenv("QWEN_API_KEY", "")
+QWEN_BASE_URL = os.getenv("QWEN_BASE_URL", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
+QWEN_MODEL    = os.getenv("QWEN_MODEL", "qwen3.7-plus")
+# Kept for the /api/settings endpoint (routes.py imports this for display) — no longer
+# used to gate the escalation decision. That decision is now purely fault-type driven.
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.8"))
 
-SYSTEM_PROMPT = """You are IndustrialPilot, an autonomous industrial AI agent integrated with
-a real factory SCADA/PLC system. You receive sensor alerts and take corrective actions via
-real industrial control protocols (Modbus TCP, VFD commands, BMS signals, PLC ladder logic).
+LOW_ALERT_METRICS = {"flow_m3s", "speed_m_s"}  # for these, LOW is the dangerous direction
 
-═══════════════════════════════════════════════════════════════
-HARD RULES — ABSOLUTE, NO EXCEPTIONS
-═══════════════════════════════════════════════════════════════
 
-RULE 1 — DIAGNOSE BEFORE ACTING
-Always call get_sensor_history first. Read the actual live values and trend.
-Never act on the alert message alone — the live state is what matters.
+# ══════════════════════════════════════════════════════════════════════
+# STEP 3 helper — a real confidence number, scaled by real margin
+# ══════════════════════════════════════════════════════════════════════
+def _margin_ratio(sensor_id: str, metric: str, value: float) -> float:
+    """How far the given value sits from its real critical threshold, as a
+    0.0-1.0 ratio on the SAFE side (0 = right at the edge, 1 = comfortably
+    clear). Negative if it's still on the unsafe side."""
+    thresh = THRESHOLDS.get(sensor_id, {}).get(metric)
+    if thresh in (None, 0):
+        return 0.5
+    if metric in LOW_ALERT_METRICS:
+        return (value - thresh) / thresh
+    return (thresh - value) / thresh
 
-RULE 2 — MANDATORY ACTION
-You MUST call at least one tool beyond get_sensor_history every time.
-If you only diagnose but take no action, you have failed.
 
-RULE 3 — NO FALSE RESOLUTIONS
-OUTCOME: AUTO_RESOLVED is valid whenever you called a remediation tool that
-physically addresses the root cause, OR successfully stabilized the equipment
-and only opened a routine (non-urgent) maintenance ticket as a scheduling
-follow-up (create_maintenance_work_order alone does not require a human
-decision right now — a technician will pick it up on their normal schedule).
-OUTCOME is ESCALATED_TO_HUMAN only if you called escalate_to_operator or
-emergency_shutdown — those are the only two actions that mean a human needs
-to make a decision before things can continue.
-Prefer fixing what you can fix. Reserve escalation for situations that are
-genuinely unsafe, electrical, or where no remediation procedure exists.
+def _scaled(lo: float, hi: float, ratio: float) -> float:
+    ratio = max(0.0, min(1.0, ratio))
+    return round(lo + (hi - lo) * ratio, 3)
 
-RULE 4 — MECHANICAL FAULTS CANNOT BE FIXED REMOTELY
-Vibration, bearing wear, belt slip, misalignment: these are PHYSICAL defects.
-No VFD command, no BMS signal, no software action can repair metal.
-For these faults: always create_maintenance_work_order (this alone still
-counts as AUTO_RESOLVED — see RULE 3 — since you've safely queued the fix).
-Only call emergency_shutdown first if vibration exceeds threshold by >80%,
-or the trend is clearly accelerating — moderate exceedance can safely wait
-for the scheduled technician visit.
 
-RULE 5 — ELECTRICAL FAULTS ARE SAFETY HAZARDS
-Insulation fault, ground fault, arc flash risk: always escalate_to_operator.
-Never attempt any remote action. An electrician must be physically present.
+# ══════════════════════════════════════════════════════════════════════
+# Diagnosis result — plain, inspectable, no magic
+# ══════════════════════════════════════════════════════════════════════
+class Diagnosis:
+    def __init__(self, category, reason, confidence, plan):
+        self.category = category      # 'operational' | 'mechanical' | 'electrical'
+                                       # | 'hard_break' | 'imminent' | 'uncertain'
+        self.reason = reason          # plain-English explanation of the READINGS
+        self.confidence = confidence  # STEP 1 diagnostic confidence (pre-action)
+        self.plan = plan              # list of (tool_name, args_dict) to execute in order
 
-RULE 6 — CONFIDENCE BELOW 65% → ESCALATE
-If your confidence is below 0.65 for any reason, you must escalate_to_operator
-even if you already called a remediation tool. An uncertain fix on live equipment
-is worse than no fix — it may mask a deeper fault. Above 0.65, apply the standard
-procedure for the fault type confidently — do not escalate just because more than
-one contributing factor is present; that is normal for real equipment.
 
-RULE 7 — TRY BEFORE YOU ESCALATE
-Escalation should be your last resort, not your first instinct. If a documented
-procedure exists for this alert type (see TOOL SELECTION below), apply it. Routine
-maintenance tickets, throttling, cooling, valve/tension adjustments, and firing-rate
-changes are all things you can do yourself — use them. Reserve escalate_to_operator
-and emergency_shutdown for cases that are genuinely electrical, safety-critical, or
-where no remediation procedure applies.
+def _pct(v):
+    return f"{v:.2f}" if isinstance(v, (int, float)) else str(v)
 
-RULE 8 — DO NOT REPEAT A REMEDIATION THAT ALREADY WORKED
-Check the sensor_changes in each tool_result before calling anything else. If a
-value is already back within its normal operating range, you are DONE with that
-parameter — do not call the same tool again "to be safe," and do not call a second
-remediation tool for a reading that's already resolved. Only call the same tool a
-second time if the tool_result shows the reading is STILL outside the safe range
-after the first attempt. Calling a tool twice when the first call already fixed the
-problem wastes a diagnostic cycle and delays your response — go straight to your
-final summary once every abnormal reading is back in range.
 
-═══════════════════════════════════════════════════════════════
-GENERAL TRIAGE LOGIC — apply this to ANY situation, not just the named
-examples below. This is the reasoning skeleton; the equipment matrix that
-follows shows how it plays out for known cases, but you should be able to
-handle a case that ISN'T listed there by falling back to this logic instead
-of getting stuck looking for an exact match.
-═══════════════════════════════════════════════════════════════
-For the sensor's readings, in this order:
+# ══════════════════════════════════════════════════════════════════════
+# STEP 2 — DIAGNOSE, per equipment type
+# ══════════════════════════════════════════════════════════════════════
+def diagnose_motor(sid, live, thresh, warn, alert_type) -> Diagnosis:
+    current, temp, vib = live.get("current_a"), live.get("temp_c"), live.get("vib_mm_s")
 
-1. Is the "output" metric (current for motors/conveyors, flow/pressure for
-   pumps/compressors/boiler, speed for conveyors) near ZERO while the
-   equipment is commanded to be running? → A hard mechanical break: sheared
-   shaft/coupling, snapped belt, sheared impeller, ruptured tube. This is
-   PHYSICAL ESCALATION every time (emergency_shutdown + create_maintenance_
-   work_order) — nothing remote can fix a physically disconnected drivetrain.
+    # 1. hard break — current near zero while commanded to run
+    if current is not None and current < thresh.get("current_a", 58) * 0.1:
+        reason = f"Current at {_pct(current)}A while the motor is commanded to run — consistent with a sheared shaft/coupling, not an electrical or thermal fault."
+        return Diagnosis("hard_break", reason, 0.97, [
+            ("emergency_shutdown", {"safety_reason": f"Near-zero current ({_pct(current)}A) on a running motor — suspected sheared shaft/coupling."}),
+            ("create_maintenance_work_order", {"priority": "high",
+                "fault_description": f"{sid}: current collapsed to {_pct(current)}A while commanded to run.",
+                "recommended_action": "Inspect motor shaft and coupling for shear/disconnection."}),
+        ])
 
-2. Is ANY metric on this sensor — not just the one that triggered the
-   alert — past its CRITICAL/trip threshold? → Treat this as mechanical/
-   structural failure territory (bearing seizure, rotor damage, tube
-   rupture, scaling blockage, seal failure), UNLESS Rule 5 already tells you
-   it's electrical (insulation fault, overcurrent with normal temp). This
-   gets a maintenance ticket at minimum, emergency_shutdown too if the
-   breach is severe or accelerating.
+    # 2. electrical — insulation fault always escalates, never a remote action
+    if alert_type == "INSULATION_FAULT":
+        reason = f"Insulation fault reported on {sid} (current {_pct(current)}A) — electrical winding hazard. No remote action can safely address this."
+        return Diagnosis("electrical", reason, 0.93, [
+            ("escalate_to_operator", {"urgency": "high", "diagnosis": reason,
+                "recommended_next_steps": ["Electrician must physically inspect winding insulation before any restart."]}),
+        ])
 
-3. Is every reading elevated but still UNDER its critical threshold (even if
-   over the warn level)? → This is normal equipment responding to normal
-   operating conditions (higher load, higher demand) — an operational issue,
-   not a mechanical one. Apply the matching autonomous remediation tool.
+    # 3. electrical — overcurrent with temperature still normal
+    if current is not None and thresh.get("current_a") and current > thresh["current_a"] and (temp is None or temp <= warn.get("temp_c", 999)):
+        reason = f"Current {_pct(current)}A exceeds the {thresh['current_a']}A trip while temperature stays normal ({_pct(temp)}°C) — this pattern points to an electrical fault (short/ground), not a thermal overload."
+        return Diagnosis("electrical", reason, 0.85, [
+            ("escalate_to_operator", {"urgency": "high", "diagnosis": reason,
+                "recommended_next_steps": ["Electrician to check for short circuit / ground fault before any load is reapplied."]}),
+        ])
 
-Use this to reason about any equipment/fault combination you haven't seen an
-exact example of below — the specific examples exist to calibrate you, not
-to be the only cases you know how to handle.
+    # 4. mechanical — vibration in/near critical, or the alert itself says so
+    if (vib is not None and thresh.get("vib_mm_s") and vib > warn.get("vib_mm_s", thresh["vib_mm_s"])) or alert_type in ("EXCESSIVE_VIBRATION", "BEARING_FAULT"):
+        deep_critical = vib is not None and thresh.get("vib_mm_s") and vib > thresh["vib_mm_s"] * 1.15
+        reason = f"Vibration {_pct(vib)} mm/s (warn {warn.get('vib_mm_s')}, critical {thresh.get('vib_mm_s')}) with current {_pct(current)}A and temp {_pct(temp)}°C — bearing wear/misalignment signature, not something a VFD command can fix."
+        plan = []
+        if deep_critical:
+            plan.append(("emergency_shutdown", {"safety_reason": f"Vibration {_pct(vib)} mm/s deep into critical range — imminent bearing/rotor failure risk."}))
+        plan.append(("create_maintenance_work_order", {
+            "priority": "high" if deep_critical else "medium",
+            "fault_description": reason,
+            "recommended_action": "Inspect and replace bearings; check shaft alignment."}))
+        return Diagnosis("mechanical", reason, 0.93 if deep_critical else 0.86, plan)
 
-═══════════════════════════════════════════════════════════════
-EQUIPMENT EXAMPLES — how the triage logic above plays out per unit. Numbers
-are this equipment's real configured WARN / CRITICAL levels (get_sensor_history
-also returns them as "alert_thresholds"/"warn_thresholds" — trust that live
-data over any number written here if they ever disagree). Always call
-get_sensor_history and check every metric this sensor reports, not just the
-one that triggered the alert, before deciding.
-═══════════════════════════════════════════════════════════════
+    # 5. operational — elevated but under critical, vibration normal
+    if (current is not None and thresh.get("current_a") and current > warn.get("current_a", thresh["current_a"])) or \
+       (temp is not None and thresh.get("temp_c") and temp > warn.get("temp_c", thresh["temp_c"])):
+        reason = f"Current {_pct(current)}A / temp {_pct(temp)}°C elevated above warn levels, vibration normal ({_pct(vib)} mm/s) — operational overload from load, not a mechanical or electrical defect."
+        plan = [("reduce_motor_load", {"reduce_by_percent": 20})]
+        if temp is not None and thresh.get("temp_c") and temp > warn.get("temp_c", thresh["temp_c"]):
+            plan.append(("activate_motor_cooling", {"duration_minutes": 20}))
+        return Diagnosis("operational", reason, 0.75, plan)
 
-── MOTORS (MOTOR-A1/B2/C3) ── Temp warn 85°C / crit 105°C · Vib warn 4.5 / crit
-7.1 mm/s · Current max-rated 54.5 / trip 58.0 A
-  • Current near 0 A while the motor is commanded to run → sheared shaft/
-    coupling (Rule 1 of the triage logic). emergency_shutdown +
-    create_maintenance_work_order.
-  • High current + rising temp + NORMAL vibration (<3 mm/s)
-      → Operational overload (load-driven, NOT mechanical).
-      → Autonomous: reduce_motor_load, then activate_motor_cooling if temp lags.
-  • Normal/moderate current + elevated vibration (>4.5) + rising temp
-      → Bearing wear / misalignment (mechanical).
-      → create_maintenance_work_order; emergency_shutdown first only if
-        vibration is deep into critical (>7.1) or accelerating fast.
-  • Vibration >7.1 (critical) + unstable/erratic current
-      → Rotor/stator eccentricity or broken rotor bar — imminent failure.
-      → emergency_shutdown + create_maintenance_work_order.
-  • Overcurrent with temperature normal → electrical fault, not thermal, not
-    mechanical → escalate_to_operator (Rule 5).
-  • Insulation fault → always escalate_to_operator, never a remote action.
+    reason = f"Alert fired ({alert_type}) but current live readings (current {_pct(current)}A, temp {_pct(temp)}°C, vib {_pct(vib)} mm/s) don't clearly match a known fault signature."
+    return Diagnosis("uncertain", reason, 0.45, [
+        ("escalate_to_operator", {"urgency": "medium", "diagnosis": reason,
+            "recommended_next_steps": ["Manual inspection recommended — readings don't match a known automated procedure."]}),
+    ])
 
-── PUMPS (PUMP-D1/E2) ── Temp warn 65°C / crit 80°C · Pressure trip 9.5 bar ·
-Flow low-flow trip 0.060 m³/s. (No vibration sensor on these units — do not
-invent a vibration reading; use temp/pressure/flow only.)
-  • Flow near 0 m³/s or pressure near 0 bar while running → sheared impeller
-    or pipe rupture (Rule 1). emergency_shutdown + create_maintenance_work_order.
-  • High pressure + low/zero flow + normal temp
-      → Deadheading / blocked or closed downstream valve (operational).
-      → Autonomous: open_pressure_bypass_valve.
-  • Low flow + fluctuating pressure (cavitation pattern) + normal temp
-      → Cavitation / inlet starvation (operational).
-      → Autonomous: increase_pump_speed.
-  • Rising temp while pressure AND flow are BOTH still normal/stable
-      → Mechanical seal friction or bearing heat — nothing else explains heat
-        with no pressure/flow abnormality.
-      → create_maintenance_work_order (this is the pump equivalent of the
-        motor's "vibration present" case — here, temp-with-everything-else-normal
-        is the mechanical tell, since there's no vibration sensor to check).
 
-── COMPRESSOR (COMP-F1) ── Temp warn 100°C / crit 110°C · Vib warn 3.5 / crit
-4.5 mm/s · Pressure max 125 / over-pressure trip 130 psi
-  • Pressure near 0 psi while running → failed drive coupling (Rule 1).
-    emergency_shutdown + create_maintenance_work_order.
-  • High/rising pressure + normal temp + normal vibration
-      → Unloader valve/regulator not modulating (operational).
-      → Autonomous: engage_compressor_unloader.
-  • Rising temp + elevated vibration (>3.5) + unstable pressure
-      → Screw/air-end bearing damage (mechanical).
-      → emergency_shutdown + create_maintenance_work_order.
-  • Rapid temp rise with vibration AND pressure both still normal
-      → Oil circuit / lubrication failure — mechanical, but vibration alone
-        won't show it yet. Don't assume "vibration normal" clears this one.
-      → create_maintenance_work_order; emergency_shutdown too if temp is deep
-        into critical, since oil-starved bearings fail fast.
-  • Oil pressure low → always emergency_shutdown immediately (seizure risk).
+def diagnose_pump(sid, live, thresh, warn, alert_type) -> Diagnosis:
+    temp, pressure, flow = live.get("temp_c"), live.get("pressure_bar"), live.get("flow_m3s")
 
-── CONVEYOR (CONV-G1) ── Temp warn 55°C / crit 70°C · Speed nominal 2.1, low/
-slip 1.5, critical-jam floor 1.2 m/s · Current nominal 28 / overload 32 A
-  • Higher current + speed only slightly below nominal + normal temp
-      → Heavier load on the belt (operational, not mechanical) — this alone
-        does not need a maintenance ticket.
-  • Speed collapsed (<1.2) + current spiking (>32) + rising temp
-      → Jam (mechanical). emergency_shutdown + create_maintenance_work_order.
-  • Speed at/near zero + current low/normal + commanded to run
-      → Snapped/derailed belt (mechanical). create_maintenance_work_order.
-  • Speed fluctuating in the slip band (1.3-1.6) but temp STAYS NORMAL
-      → Simple tension slip (operational). Autonomous: adjust_conveyor_tension.
-  • Speed fluctuating in the slip band AND temp is also climbing (>55)
-      → Drive-drum friction/polishing, not just slack tension (mechanical).
-      → create_maintenance_work_order in addition to adjust_conveyor_tension.
+    # 1. hard break — flow or pressure near zero while running
+    if (flow is not None and thresh.get("flow_m3s") and flow < thresh["flow_m3s"] * 0.15) or \
+       (pressure is not None and thresh.get("pressure_bar") and pressure < thresh["pressure_bar"] * 0.15):
+        reason = f"Flow {_pct(flow)} m³/s / pressure {_pct(pressure)} bar collapsed near zero while running — consistent with a sheared impeller or pipe rupture."
+        return Diagnosis("hard_break", reason, 0.96, [
+            ("emergency_shutdown", {"safety_reason": reason}),
+            ("create_maintenance_work_order", {"priority": "high",
+                "fault_description": reason, "recommended_action": "Inspect impeller and piping for rupture/shear."}),
+        ])
 
-── BOILER (BOIL-H1) ── Temp operating ~193, warn 205, crit 215°C · Pressure
-nominal 12.5, warn 14.0, crit 15.5 bar · Flow nominal 0.095, critical-low
-0.050 m³/s
-  • High pressure + high temp + flow normal/low
-      → Firing rate exceeds steam demand (operational).
-      → Autonomous: reduce_boiler_firing_rate.
-  • Low flow + LOW/normal pressure (feedwater genuinely short)
-      → Feedwater supply issue (operational, urgent).
-      → Autonomous: open_boiler_feedwater_valve immediately;
-        emergency_shutdown too if flow <40% of the critical-low floor.
-  • Low flow + HIGH pressure + elevated flue/shell temp together
-      → Internal scale buildup / blockage restricting flow despite pressure
-        staying up (mechanical, not a feedwater supply problem — opening the
-        feedwater valve alone will not fix a blockage).
-      → create_maintenance_work_order (descaling); gradual, controlled
-        shutdown rather than an abrupt one.
-  • Sudden pressure AND flow collapse together with temp spiking/erratic
-      → Tube rupture / structural leak — dry-fire risk.
-      → emergency_shutdown + create_maintenance_work_order + escalate_to_operator.
-  • Flame failure → always emergency_shutdown + escalate_to_operator, never a
-    remote restart (gas accumulation risk).
+    # 2. mechanical — temp elevated while pressure & flow both stay normal (no vibration sensor on pumps)
+    if temp is not None and thresh.get("temp_c") and temp > warn.get("temp_c", thresh["temp_c"]) and \
+       (pressure is None or not thresh.get("pressure_bar") or pressure <= warn.get("pressure_bar", thresh["pressure_bar"])) and \
+       (flow is None or not thresh.get("flow_m3s") or flow >= warn.get("flow_m3s", thresh["flow_m3s"])):
+        reason = f"Temperature {_pct(temp)}°C elevated while pressure ({_pct(pressure)} bar) and flow ({_pct(flow)} m³/s) both stay normal — nothing else explains the heat; this is a mechanical seal/bearing friction signature (no vibration sensor on this unit to confirm further)."
+        return Diagnosis("mechanical", reason, 0.84, [
+            ("create_maintenance_work_order", {"priority": "medium", "fault_description": reason,
+                "recommended_action": "Inspect mechanical seal and bearings for friction/wear."}),
+        ])
 
-═══════════════════════════════════════════════════════════════
-TOOL SELECTION — QUICK REFERENCE BY ALERT TYPE
-═══════════════════════════════════════════════════════════════
-Use the matrix above to pick the right branch; this is just the tool mapping.
+    # 3. operational — deadheading (high pressure + low flow, temp normal)
+    if pressure is not None and thresh.get("pressure_bar") and pressure > warn.get("pressure_bar", thresh["pressure_bar"]):
+        reason = f"Pressure {_pct(pressure)} bar above warn ({warn.get('pressure_bar')}) with flow {_pct(flow)} m³/s and temp {_pct(temp)}°C normal — deadheading / blocked downstream valve, an operational condition."
+        return Diagnosis("operational", reason, 0.80, [("open_pressure_bypass_valve", {})])
 
-OVERCURRENT on motor (temp also high, vib normal) → reduce_motor_load, then
-  activate_motor_cooling if temp lags; emergency_shutdown only if temp is
-  still >115% of the real threshold after both.
-OVERCURRENT on motor (temp normal) → escalate_to_operator (electrical).
-OVERTEMPERATURE on motor → activate_motor_cooling first, reduce_motor_load too
-  if current is also elevated; emergency_shutdown if temp stays deep critical.
-EXCESSIVE_VIBRATION / BEARING_FAULT on motor or compressor → create_maintenance
-  _work_order always (counts as AUTO_RESOLVED per Rule 3/4); emergency_shutdown
-  first only if vibration is deep into critical or accelerating fast. Never
-  use reduce_motor_load alone for this — it doesn't fix a mechanical fault.
-INSULATION_FAULT → escalate_to_operator, never a remote action.
-HIGH_PRESSURE on pump → open_pressure_bypass_valve; emergency_shutdown if
-  pressure doesn't respond and stays well over threshold.
-LOW_FLOW_RATE / CAVITATION on pump → increase_pump_speed; if temp is ALSO
-  elevated with pressure/flow otherwise stable, add create_maintenance_work_order
-  (seal/bearing heat, per the pump matrix above) instead of just increasing speed.
-HIGH_PRESSURE / OIL_PRESSURE_LOW on compressor → HIGH_PRESSURE: engage_
-  compressor_unloader. OIL_PRESSURE_LOW: emergency_shutdown immediately.
-UNDERSPEED / BELT_SLIP on conveyor → if temp stays normal: adjust_conveyor_
-  tension alone. If temp is also climbing or current also spikes: add
-  create_maintenance_work_order (see conveyor matrix above).
-OVERPRESSURE / OVERTEMPERATURE on boiler → reduce_boiler_firing_rate;
-  emergency_shutdown if >130% of threshold.
-LOW_WATER_FLOW on boiler → open_boiler_feedwater_valve immediately, UNLESS
-  pressure is also high (see boiler matrix — that's blockage, not supply,
-  and needs create_maintenance_work_order instead).
-FLAME_FAILURE on boiler → emergency_shutdown + escalate_to_operator.
+    # 4. operational — cavitation / low flow with everything else normal
+    if flow is not None and thresh.get("flow_m3s") and flow < thresh["flow_m3s"]:
+        reason = f"Flow {_pct(flow)} m³/s below the {thresh['flow_m3s']} m³/s trip with pressure/temp otherwise unremarkable — cavitation / inlet starvation, an operational condition."
+        return Diagnosis("operational", reason, 0.75, [("increase_pump_speed", {"increase_by_percent": 15})])
 
-═══════════════════════════════════════════════════════════════
-CONFIDENCE SCORING — MECHANICAL PROCEDURE, NOT A JUDGMENT CALL
-═══════════════════════════════════════════════════════════════
-Do not eyeball this number. Compute it with the exact procedure below, in
-order, and show your work in the VERIFICATION line required in OUTPUT FORMAT.
+    reason = f"Alert fired ({alert_type}) but readings (temp {_pct(temp)}, pressure {_pct(pressure)}, flow {_pct(flow)}) don't clearly match a known signature."
+    return Diagnosis("uncertain", reason, 0.45, [
+        ("escalate_to_operator", {"urgency": "medium", "diagnosis": reason,
+            "recommended_next_steps": ["Manual inspection recommended."]}),
+    ])
 
-STEP 1 — Diagnostic confidence, before you act:
-0.90-1.00: Single unambiguous cause, clear sensor pattern, low-risk fix
-0.80-0.89: Clear primary cause, moderate risk, standard procedure applies
-0.65-0.79: Primary cause reasonably clear even with a secondary contributing
-  factor or a known equipment quirk — a standard procedure from this prompt
-  still applies.
-0.40-0.64: Contradictory readings, sensor may be faulty, unknown failure mode → escalate
-Below 0.40: Severely insufficient data, extreme safety risk → emergency_shutdown + escalate
 
-STEP 2 — If you called a real remediation tool (not just a maintenance ticket
-or escalation), go through every metric that appeared in a tool_result's
-sensor_changes. Take the LAST "to" value you saw for that metric across all
-your tool calls (if you adjusted it more than once, use the final number, not
-the first attempt). Compare that final number against the real threshold from
-get_sensor_history's alert_thresholds (not a number you remember from general
-knowledge). Mark each one PASS or FAIL:
-  PASS = final value is back within the safe side of the real threshold
-  FAIL = final value is still on the unsafe side of the real threshold
+def diagnose_compressor(sid, live, thresh, warn, alert_type) -> Diagnosis:
+    temp, pressure, vib = live.get("temp_c"), live.get("pressure_psi"), live.get("vib_mm_s")
 
-STEP 3 — Set CONFIDENCE using this table. Pick a specific number WITHIN the
-given range based on how much margin the final reading has — don't just
-default to the same round number every time; a value that landed barely
-inside safe range should score lower in the range than one with wide margin:
-  - Every changed metric is PASS → CONFIDENCE = 0.86-0.97, scaled by margin
-    (a value sitting right at the edge of safe → ~0.86; a value with 20%+
-    headroom below the threshold → ~0.95+). A verified fix is not a guess —
-    don't report 0.75 here just because the initial diagnosis felt routine;
-    the diagnosis being routine and the fix being VERIFIED are two different
-    facts, and this step is asking about the second one.
-  - Every changed metric is PASS but at least one is within 5% of the
-    threshold (a narrow margin) → CONFIDENCE = 0.78-0.85
-  - At least one changed metric is still FAIL → CONFIDENCE = 0.35-0.60,
-    scaled by how far off it still is (closer to safe → higher in the range)
-  - You only created a maintenance ticket or escalated (no remediation tool
-    changed a physical reading) → use your Step 1 number as-is; Step 2/3
-    don't apply since there is nothing to verify
+    if alert_type == "OIL_PRESSURE_LOW":
+        reason = f"Oil pressure low on {sid} — bearings can seize within minutes without lubrication. No remote fix; immediate shutdown required."
+        return Diagnosis("imminent", reason, 0.95, [
+            ("emergency_shutdown", {"safety_reason": reason}),
+            ("create_maintenance_work_order", {"priority": "critical", "fault_description": reason,
+                "recommended_action": "Check oil level, pump, and thermal valve before restart."}),
+        ])
 
-Worked example: OVERCURRENT alert, current_a threshold 58.0. You call
-reduce_motor_load, final current_a lands at 48.4 (16.6% below trip) → PASS
-with moderate margin. Temp threshold 105, final temp_c lands at 62.6 (40%+
-below trip) → PASS with wide margin. Both PASS, one with wide margin →
-CONFIDENCE around 0.93, not a flat 0.90 or 0.75.
+    if pressure is not None and thresh.get("pressure_psi") and pressure < thresh["pressure_psi"] * 0.05:
+        reason = f"Pressure near 0 psi while running — consistent with a failed drive coupling."
+        return Diagnosis("hard_break", reason, 0.95, [
+            ("emergency_shutdown", {"safety_reason": reason}),
+            ("create_maintenance_work_order", {"priority": "high", "fault_description": reason,
+                "recommended_action": "Inspect drive coupling."}),
+        ])
 
-═══════════════════════════════════════════════════════════════
-OUTPUT FORMAT — MANDATORY, EXACTLY AS SHOWN
-═══════════════════════════════════════════════════════════════
-After all tool calls, end with EXACTLY:
-ROOT_CAUSE: [specific engineering diagnosis — cite which sensor, what value, what it indicates]
-VERIFICATION: [if you called a remediation tool: list each changed metric as
-  "metric final_value vs threshold → PASS/FAIL" per Step 2 above. If you only
-  created a ticket or escalated: write "N/A — no remote reading to verify".]
-CONFIDENCE: [0.0-1.0 — must follow mechanically from the VERIFICATION line
-  above per the Step 3 table; these two lines must agree with each other]
-ACTIONS_TAKEN: [list every tool called and why]
-OUTCOME: [AUTO_RESOLVED or ESCALATED_TO_HUMAN]
-NEXT_STEPS: [concrete next actions for the operator or technician]"""
+    if (vib is not None and thresh.get("vib_mm_s") and vib > warn.get("vib_mm_s", thresh["vib_mm_s"])) or alert_type == "EXCESSIVE_VIBRATION":
+        deep = vib is not None and thresh.get("vib_mm_s") and vib > thresh["vib_mm_s"]
+        reason = f"Vibration {_pct(vib)} mm/s with temp {_pct(temp)}°C and pressure {_pct(pressure)} psi — screw/air-end bearing damage signature."
+        plan = [("emergency_shutdown", {"safety_reason": reason})] if deep else []
+        plan.append(("create_maintenance_work_order", {"priority": "high" if deep else "medium",
+            "fault_description": reason, "recommended_action": "Inspect screw rotor and air-end bearings."}))
+        return Diagnosis("mechanical", reason, 0.90 if deep else 0.83, plan)
+
+    if temp is not None and thresh.get("temp_c") and temp > warn.get("temp_c", thresh["temp_c"]) and \
+       (vib is None or not thresh.get("vib_mm_s") or vib <= warn.get("vib_mm_s", thresh["vib_mm_s"])) and \
+       (pressure is None or not thresh.get("pressure_psi") or pressure <= warn.get("pressure_psi", thresh["pressure_psi"])):
+        reason = f"Temp {_pct(temp)}°C rising rapidly while vibration ({_pct(vib)} mm/s) and pressure ({_pct(pressure)} psi) both stay normal — oil circuit/lubrication failure; vibration alone won't show this yet."
+        deep = thresh.get("temp_c") and temp > thresh["temp_c"] * 0.95
+        plan = [("emergency_shutdown", {"safety_reason": reason})] if deep else []
+        plan.append(("create_maintenance_work_order", {"priority": "high", "fault_description": reason,
+            "recommended_action": "Check oil circuit, cooler, and lubricant level."}))
+        return Diagnosis("mechanical", reason, 0.85, plan)
+
+    if pressure is not None and thresh.get("pressure_psi") and pressure > warn.get("pressure_psi", thresh["pressure_psi"]):
+        reason = f"Pressure {_pct(pressure)} psi above warn with temp/vibration normal — unloader valve/regulator not modulating correctly, an operational condition."
+        return Diagnosis("operational", reason, 0.80, [("engage_compressor_unloader", {})])
+
+    reason = f"Alert fired ({alert_type}) but readings don't clearly match a known signature."
+    return Diagnosis("uncertain", reason, 0.45, [
+        ("escalate_to_operator", {"urgency": "medium", "diagnosis": reason,
+            "recommended_next_steps": ["Manual inspection recommended."]}),
+    ])
+
+
+def diagnose_conveyor(sid, live, thresh, warn, alert_type) -> Diagnosis:
+    temp, speed, current = live.get("temp_c"), live.get("speed_m_s"), live.get("current_a")
+
+    if speed is not None and thresh.get("speed_m_s") and speed < thresh["speed_m_s"] * 0.3 and \
+       current is not None and current < warn.get("current_a", 999) * 0.6:
+        reason = f"Speed collapsed to {_pct(speed)} m/s with current only {_pct(current)}A (not spiking) — consistent with a snapped or derailed belt, not a jam."
+        return Diagnosis("hard_break", reason, 0.93, [
+            ("create_maintenance_work_order", {"priority": "high", "fault_description": reason,
+                "recommended_action": "Inspect belt for breakage/derailment."}),
+        ])
+
+    if speed is not None and thresh.get("speed_m_s") and speed < thresh["speed_m_s"] and \
+       current is not None and thresh.get("current_a") and current > thresh["current_a"]:
+        reason = f"Speed {_pct(speed)} m/s below the jam floor with current spiking to {_pct(current)}A and temp {_pct(temp)}°C — mechanical jam."
+        return Diagnosis("mechanical", reason, 0.91, [
+            ("emergency_shutdown", {"safety_reason": reason}),
+            ("create_maintenance_work_order", {"priority": "high", "fault_description": reason,
+                "recommended_action": "Clear jam before restart; inspect for material buildup."}),
+        ])
+
+    if speed is not None and thresh.get("speed_m_s") and speed < warn.get("speed_m_s", thresh["speed_m_s"]) and \
+       temp is not None and thresh.get("temp_c") and temp > warn.get("temp_c", thresh["temp_c"]):
+        reason = f"Speed fluctuating low ({_pct(speed)} m/s) AND temp climbing ({_pct(temp)}°C) — drive-drum friction/polishing, not just slack tension."
+        return Diagnosis("mechanical", reason, 0.84, [
+            ("adjust_conveyor_tension", {}),
+            ("create_maintenance_work_order", {"priority": "medium", "fault_description": reason,
+                "recommended_action": "Inspect drive drum surface and belt tensioners."}),
+        ])
+
+    if speed is not None and thresh.get("speed_m_s") and speed < warn.get("speed_m_s", thresh["speed_m_s"]):
+        reason = f"Speed {_pct(speed)} m/s below warn with temp normal ({_pct(temp)}°C) — simple tension slip, an operational adjustment."
+        return Diagnosis("operational", reason, 0.80, [("adjust_conveyor_tension", {})])
+
+    if current is not None and thresh.get("current_a") and current > warn.get("current_a", thresh["current_a"]) and \
+       temp is not None and thresh.get("temp_c") and temp <= warn.get("temp_c", thresh["temp_c"]):
+        reason = f"Current {_pct(current)}A elevated with speed only slightly reduced ({_pct(speed)} m/s) and temp normal — heavier load on the belt, operational, not mechanical."
+        return Diagnosis("operational", reason, 0.72, [("adjust_conveyor_tension", {})])
+
+    reason = f"Alert fired ({alert_type}) but readings don't clearly match a known signature."
+    return Diagnosis("uncertain", reason, 0.45, [
+        ("escalate_to_operator", {"urgency": "medium", "diagnosis": reason,
+            "recommended_next_steps": ["Manual inspection recommended."]}),
+    ])
+
+
+def diagnose_boiler(sid, live, thresh, warn, alert_type) -> Diagnosis:
+    temp, pressure, flow = live.get("temp_c"), live.get("pressure_bar"), live.get("flow_m3s")
+
+    if alert_type == "FLAME_FAILURE":
+        reason = "Flame failure — burner shut off. Gas accumulation risk; never a remote restart."
+        return Diagnosis("imminent", reason, 0.96, [
+            ("emergency_shutdown", {"safety_reason": reason}),
+            ("escalate_to_operator", {"urgency": "critical", "diagnosis": reason,
+                "recommended_next_steps": ["Check fuel supply, ignition, and flame detector before any restart."]}),
+        ])
+
+    if pressure is not None and thresh.get("pressure_bar") and pressure < thresh["pressure_bar"] * 0.55 and \
+       flow is not None and thresh.get("flow_m3s") and flow < thresh["flow_m3s"] * 0.85:
+        reason = f"Pressure ({_pct(pressure)} bar) and flow ({_pct(flow)} m³/s) collapsed together with temp {_pct(temp)}°C — tube rupture / structural leak, dry-fire risk."
+        return Diagnosis("imminent", reason, 0.94, [
+            ("emergency_shutdown", {"safety_reason": reason}),
+            ("create_maintenance_work_order", {"priority": "critical", "fault_description": reason,
+                "recommended_action": "Inspect for tube rupture / structural leak before any restart."}),
+            ("escalate_to_operator", {"urgency": "critical", "diagnosis": reason,
+                "recommended_next_steps": ["Boiler inspector required before restart."]}),
+        ])
+
+    if flow is not None and thresh.get("flow_m3s") and flow < thresh["flow_m3s"] and \
+       pressure is not None and thresh.get("pressure_bar") and pressure > warn.get("pressure_bar", thresh["pressure_bar"]):
+        reason = f"Flow low ({_pct(flow)} m³/s) while pressure stays HIGH ({_pct(pressure)} bar) — internal scale buildup/blockage, not a feedwater supply issue (opening the feedwater valve alone won't fix a blockage)."
+        return Diagnosis("mechanical", reason, 0.83, [
+            ("create_maintenance_work_order", {"priority": "high", "fault_description": reason,
+                "recommended_action": "Schedule descaling / internal inspection."}),
+        ])
+
+    if flow is not None and thresh.get("flow_m3s") and flow < thresh["flow_m3s"]:
+        reason = f"Flow {_pct(flow)} m³/s below the critical floor with pressure not elevated — genuine feedwater supply shortfall, urgent but operational."
+        plan = [("open_boiler_feedwater_valve", {})]
+        if flow < thresh["flow_m3s"] * 0.4:
+            plan.insert(0, ("emergency_shutdown", {"safety_reason": f"Flow at {_pct(flow)} m³/s, under 40% of the critical floor — dry-fire risk while feedwater is restored."}))
+        return Diagnosis("operational", reason, 0.78, plan)
+
+    if pressure is not None and thresh.get("pressure_bar") and pressure > warn.get("pressure_bar", thresh["pressure_bar"]):
+        reason = f"Pressure {_pct(pressure)} bar / temp {_pct(temp)}°C above warn with flow normal/low — firing rate exceeds steam demand, operational."
+        return Diagnosis("operational", reason, 0.80, [("reduce_boiler_firing_rate", {"reduce_by_percent": 30})])
+
+    reason = f"Alert fired ({alert_type}) but readings don't clearly match a known signature."
+    return Diagnosis("uncertain", reason, 0.45, [
+        ("escalate_to_operator", {"urgency": "medium", "diagnosis": reason,
+            "recommended_next_steps": ["Manual inspection recommended."]}),
+    ])
+
+
+_DIAGNOSERS = {
+    "MOTOR": diagnose_motor, "PUMP": diagnose_pump, "COMP": diagnose_compressor,
+    "CONV": diagnose_conveyor, "BOIL": diagnose_boiler,
+}
+
+
+def diagnose(sensor_id: str, alert_type: str, live: dict) -> Diagnosis:
+    thresh = THRESHOLDS.get(sensor_id, {})
+    warn = WARN_THRESHOLDS.get(sensor_id, {})
+    prefix = sensor_id.split("-")[0]
+    fn = _DIAGNOSERS.get(prefix)
+    if not fn:
+        reason = f"Unrecognized equipment prefix for {sensor_id}."
+        return Diagnosis("uncertain", reason, 0.3, [
+            ("escalate_to_operator", {"urgency": "medium", "diagnosis": reason, "recommended_next_steps": ["Manual review required."]}),
+        ])
+    return fn(sensor_id, live, thresh, warn, alert_type)
+
+
+# categories that mean "a human needs to make a decision right now" — the equipment
+# being safely shut down is NOT the same as needing a live decision: a hard mechanical
+# break or a bearing fault already has its outcome decided (ticket + safe state), so
+# those are NOT in this set, matching the "auto-resolve + advisory" tier.
+ESCALATING_CATEGORIES = {"electrical", "imminent", "uncertain"}
+# categories fully handled by ticket/shutdown alone — no live human decision needed,
+# just an informational notice so the follow-up repair isn't forgotten
+ADVISORY_ONLY_CATEGORIES = {"mechanical", "hard_break"}
 
 
 class IndustrialPilotAgent:
     def __init__(self):
-        self.client = AsyncOpenAI(
-            api_key=QWEN_API_KEY,
-            base_url=QWEN_BASE_URL
-        )
+        self.client = AsyncOpenAI(api_key=QWEN_API_KEY, base_url=QWEN_BASE_URL)
 
     async def process_alert(self, alert: dict, websocket_callback=None) -> dict:
-        alert_id  = alert.get("alert_id", f"ALT-{uuid.uuid4().hex[:8].upper()}")
+        alert_id = alert.get("alert_id", f"ALT-{uuid.uuid4().hex[:8].upper()}")
         sensor_id = alert.get("sensor_id", "UNKNOWN")
-        alert_type= alert.get("alert_type", "UNKNOWN")
-        severity  = alert.get("severity", "medium")
+        alert_type = alert.get("alert_type", "UNKNOWN")
+        severity = alert.get("severity", "medium")
 
-        # ── persist alert ──────────────────────────────────────────
         insert_incident(alert_id, sensor_id, alert_type, severity, alert)
-
         await self._cb(websocket_callback, {
-            "type": "agent_start",
-            "alert_id": alert_id,
+            "type": "agent_start", "alert_id": alert_id,
             "message": f"🔍 Analyzing {alert_id} — {alert_type} on {sensor_id} [{severity.upper()}]"
         })
 
-        # ── build initial prompt ───────────────────────────────────
-        data = alert.get("data", {})
-        user_message = f"""INCOMING FACTORY ALERT:
-Alert ID:   {alert_id}
-Sensor:     {sensor_id}
-Type:       {alert_type}
-Severity:   {severity.upper()}
-Reading:    {data.get('value', 'N/A')} {data.get('unit', '')} (threshold: {data.get('threshold', 'N/A')} {data.get('unit', '')})
-Location:   {data.get('location', 'Unknown')}
-Equipment:  {data.get('equipment_type', 'Unknown')}
-Timestamp:  {alert.get('timestamp', datetime.utcnow().isoformat())}
-
-Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and act."""
-
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": user_message}
-        ]
-
         tool_results = []
-        final_text   = ""
 
-        # ── agentic loop ───────────────────────────────────────────
         try:
-            for iteration in range(8):
+            # ── STEP 1: SCAN ──────────────────────────────────────────
+            hist = await execute_tool("get_sensor_history", {"sensor_id": sensor_id})
+            tool_results.append({"tool": "get_sensor_history", "args": {"sensor_id": sensor_id}, "result": hist})
+            live_before = get_state(sensor_id)
+            await self._cb(websocket_callback, {
+                "type": "agent_reasoning", "alert_id": alert_id,
+                "message": f"📡 Live readings: {live_before}"
+            })
+
+            # ── STEP 2: DIAGNOSE ──────────────────────────────────────
+            diag = diagnose(sensor_id, alert_type, live_before)
+            await self._cb(websocket_callback, {
+                "type": "agent_reasoning", "alert_id": alert_id,
+                "message": f"🧠 Diagnosis [{diag.category}]: {diag.reason}"
+            })
+
+            # ── STEP 4: DECIDE / execute the plan ─────────────────────
+            changed_metrics = set()
+            for tool_name, extra_args in diag.plan:
+                args = self._build_args(tool_name, sensor_id, alert_id, extra_args)
                 await self._cb(websocket_callback, {
-                    "type": "agent_thinking",
-                    "alert_id": alert_id,
-                    "iteration": iteration + 1,
-                    "message": f"🧠 Qwen reasoning... (step {iteration + 1})"
+                    "type": "tool_call", "alert_id": alert_id, "tool": tool_name,
+                    "message": f"⚙️ Calling {tool_name}"
+                })
+                result = await execute_tool(tool_name, args)
+                tool_results.append({"tool": tool_name, "args": args, "result": result})
+                for m in (result.get("sensor_changes") or {}):
+                    changed_metrics.add(m)
+                await self._cb(websocket_callback, {
+                    "type": "tool_result", "alert_id": alert_id, "tool": tool_name,
+                    "sensor_changes": result.get("sensor_changes", {}),
+                    "message": f"✅ {tool_name}: {result.get('message', '')}"
                 })
 
-                response = await self.client.chat.completions.create(
-                    model=QWEN_MODEL,
-                    messages=messages,
-                    tools=TOOL_DEFINITIONS,
-                    tool_choice="auto",
-                    temperature=0.1,
-                    max_tokens=2000
-                )
+            # ── STEP 5: VERIFY ─────────────────────────────────────────
+            live_after = get_state(sensor_id)
+            thresh = THRESHOLDS.get(sensor_id, {})
+            verified, worst_margin, verify_lines = self._verify(sensor_id, changed_metrics, live_after, thresh)
 
-                msg = response.choices[0].message
+            escalated = diag.category in ESCALATING_CATEGORIES
+            confidence = diag.confidence
 
-                # add to history
-                assistant_msg = {"role": "assistant", "content": msg.content or ""}
-                if msg.tool_calls:
-                    assistant_msg["tool_calls"] = [
-                        {"id": tc.id, "type": "function",
-                         "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
-                        for tc in msg.tool_calls
-                    ]
-                messages.append(assistant_msg)
-
-                # no more tool calls → agent finished
-                if not msg.tool_calls:
-                    final_text = msg.content or ""
+            if diag.category == "operational":
+                if changed_metrics and verified:
+                    confidence = _scaled(0.86, 0.97, worst_margin)
+                elif changed_metrics and not verified:
+                    # ONE bounded retry with a stronger action before giving up —
+                    # not an open-ended loop, just a single second attempt.
+                    retry_tool, retry_args = diag.plan[0][0], dict(diag.plan[0][1])
+                    if "reduce_by_percent" in retry_args or retry_tool in ("reduce_motor_load", "reduce_boiler_firing_rate"):
+                        retry_args["reduce_by_percent"] = min(45, retry_args.get("reduce_by_percent", 20) + 20)
+                    elif "increase_by_percent" in retry_args or retry_tool == "increase_pump_speed":
+                        retry_args["increase_by_percent"] = min(30, retry_args.get("increase_by_percent", 15) + 15)
+                    args = self._build_args(retry_tool, sensor_id, alert_id, retry_args)
                     await self._cb(websocket_callback, {
-                        "type": "agent_reasoning",
-                        "alert_id": alert_id,
-                        "message": f"💭 {final_text[:200]}"
+                        "type": "agent_reasoning", "alert_id": alert_id,
+                        "message": f"↻ First action wasn't enough — retrying {retry_tool} with a stronger setting."
                     })
-                    break
+                    result = await execute_tool(retry_tool, args)
+                    tool_results.append({"tool": retry_tool, "args": args, "result": result})
+                    for m in (result.get("sensor_changes") or {}):
+                        changed_metrics.add(m)
+                    live_after = get_state(sensor_id)
+                    verified, worst_margin, verify_lines = self._verify(sensor_id, changed_metrics, live_after, thresh)
+                    if verified:
+                        confidence = _scaled(0.80, 0.90, worst_margin)
+                    else:
+                        confidence = _scaled(0.35, 0.55, worst_margin)
+                        escalated = True
+                        esc_reason = f"Attempted remediation twice on {sensor_id}; readings still outside safe range: {verify_lines}"
+                        result = await execute_tool("escalate_to_operator", self._build_args(
+                            "escalate_to_operator", sensor_id, alert_id, {
+                                "urgency": "high", "diagnosis": esc_reason,
+                                "recommended_next_steps": ["Automated remediation did not resolve this — manual intervention required."]}))
+                        tool_results.append({"tool": "escalate_to_operator", "args": {}, "result": result})
 
-                # execute tools
-                for tc in msg.tool_calls:
-                    tool_name = tc.function.name
-                    try:
-                        tool_args = json.loads(tc.function.arguments)
-                    except Exception:
-                        tool_args = {}
+            elif diag.category in ADVISORY_ONLY_CATEGORIES:
+                # Ticket (and possibly a safety shutdown) already fully resolves this —
+                # nothing remote can verify a physical repair, so confidence reflects
+                # classification certainty, not a sensor check. Send a low-priority
+                # advisory so the follow-up repair isn't forgotten, without blocking
+                # on a human decision now.
+                advisory = await execute_tool("escalate_to_operator", self._build_args(
+                    "escalate_to_operator", sensor_id, alert_id, {
+                        "urgency": "info", "diagnosis": diag.reason,
+                        "recommended_next_steps": ["Already handled (ticket/shutdown) — this is FYI only, no action needed right now."]}))
+                tool_results.append({"tool": "escalate_to_operator", "args": {}, "result": advisory})
 
-                    await self._cb(websocket_callback, {
-                        "type": "tool_call",
-                        "alert_id": alert_id,
-                        "tool": tool_name,
-                        "message": f"⚙️ Calling {tool_name}({list(tool_args.keys())})"
-                    })
+            elif diag.category in ESCALATING_CATEGORIES:
+                # Guarantee a real notification fires for every escalating category,
+                # even if this specific diagnosis didn't already include one in its plan.
+                already_notified = any(t["tool"] == "escalate_to_operator" for t in tool_results)
+                if not already_notified:
+                    urgency = "critical" if diag.category == "imminent" else "high"
+                    result = await execute_tool("escalate_to_operator", self._build_args(
+                        "escalate_to_operator", sensor_id, alert_id, {
+                            "urgency": urgency, "diagnosis": diag.reason,
+                            "recommended_next_steps": ["Human review required before this can proceed."]}))
+                    tool_results.append({"tool": "escalate_to_operator", "args": {}, "result": result})
 
-                    result = await execute_tool(tool_name, tool_args)
-                    tool_results.append({"tool": tool_name, "args": tool_args, "result": result})
-                    # NOTE: execute_tool() in tools.py already calls log_remediation() internally
-                    # for every tool with an alert_id. Logging it again here was writing every
-                    # real action to the DB twice, which is why every incident showed each
-                    # action as "(x2)" even though it only happened once.
+            action_tools_called = [t["tool"] for t in tool_results if t["tool"] != "get_sensor_history"]
 
-                    sensor_changes = result.get("sensor_changes", {})
-                    await self._cb(websocket_callback, {
-                        "type": "tool_result",
-                        "alert_id": alert_id,
-                        "tool": tool_name,
-                        "sensor_id": tool_args.get("motor_id") or tool_args.get("unit_id",""),
-                        "sensor_changes": sensor_changes,
-                        "message": f"✅ {tool_name}: {result.get('message', str(result)[:100])}"
-                    })
+            # ── STEP 6: NARRATE (Qwen, optional, never changes the decision) ──
+            narrative = await self._narrate(sensor_id, alert_type, diag, verify_lines, confidence, escalated)
 
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": json.dumps(result)
-                    })
+            log_decision(
+                alert_id=alert_id, reasoning=narrative, confidence=confidence,
+                action_taken=json.dumps(action_tools_called),
+                action_result={"tools": tool_results, "category": diag.category},
+                escalated=escalated,
+            )
+            report = self._build_report(alert_id, alert, tool_results, narrative, diag, confidence, escalated)
+            save_report(alert_id, report)
+            update_incident_status(alert_id, "escalated" if escalated else "resolved")
+
+            status_msg = (
+                f"🚨 ESCALATED [{diag.category}] — confidence {confidence:.0%}"
+                if escalated else
+                f"✅ AUTO-RESOLVED [{diag.category}] — confidence {confidence:.0%}"
+            )
+            await self._cb(websocket_callback, {
+                "type": "agent_complete", "alert_id": alert_id, "escalated": escalated,
+                "confidence": confidence, "message": status_msg
+            })
+            return {
+                "alert_id": alert_id, "status": "escalated" if escalated else "resolved",
+                "confidence": confidence, "escalated": escalated,
+                "tool_results": tool_results, "category": diag.category,
+            }
 
         except Exception as e:
-            # ── API error: log it and escalate ────────────────────
             error_msg = str(e)
-            await self._cb(websocket_callback, {
-                "type": "agent_error",
-                "alert_id": alert_id,
-                "message": f"❌ Agent error: {error_msg[:200]}"
-            })
-            # Still save the incident so it shows in dashboard
-            log_decision(
-                alert_id=alert_id,
-                reasoning=f"Agent error: {error_msg}",
-                confidence=0.0,
-                action_taken="none",
-                action_result={"error": error_msg},
-                escalated=True
-            )
+            await self._cb(websocket_callback, {"type": "agent_error", "alert_id": alert_id,
+                "message": f"❌ Agent error: {error_msg[:200]}"})
+            log_decision(alert_id=alert_id, reasoning=f"Agent error: {error_msg}", confidence=0.0,
+                action_taken="none", action_result={"error": error_msg}, escalated=True)
             update_incident_status(alert_id, "error")
             save_report(alert_id, f"# Error Report\nAgent failed: {error_msg}")
-            await self._cb(websocket_callback, {
-                "type": "agent_complete",
-                "alert_id": alert_id,
-                "escalated": True,
-                "confidence": 0.0,
-                "message": f"⚠️ Incident {alert_id} saved — agent encountered API error"
-            })
+            await self._cb(websocket_callback, {"type": "agent_complete", "alert_id": alert_id,
+                "escalated": True, "confidence": 0.0, "message": f"⚠️ Incident {alert_id} saved — agent error"})
             return {"alert_id": alert_id, "status": "error", "error": error_msg}
 
-        # ── HARD ENFORCEMENT: never allow "resolved" with zero real actions ──
-        # Diagnostic-only tools don't count as an action.
-        DIAGNOSTIC_ONLY_TOOLS = {"get_sensor_history"}
-        # Only these two force a human decision point. create_maintenance_work_order
-        # is just scheduling paperwork for a technician's normal rounds — it does NOT
-        # mean the situation needs a human right now, so it no longer forces escalation.
-        ESCALATION_TOOLS      = {"escalate_to_operator", "emergency_shutdown"}
+    # ── helpers ────────────────────────────────────────────────────────
+    def _build_args(self, tool_name: str, sensor_id: str, alert_id: str, extra: dict) -> dict:
+        args = dict(extra)
+        args["alert_id"] = alert_id
+        if tool_name in ("reduce_motor_load", "activate_motor_cooling", "clear_motor_fault_and_restart"):
+            args["motor_id"] = sensor_id
+        elif tool_name == "escalate_to_operator":
+            args.setdefault("sensor_id", sensor_id)
+            args.setdefault("actions_taken", [])
+        elif tool_name in ("emergency_shutdown", "create_maintenance_work_order"):
+            args["unit_id"] = sensor_id
+        else:
+            args["unit_id"] = sensor_id
+        return args
 
-        action_tools_called = [
-            t["tool"] for t in tool_results if t["tool"] not in DIAGNOSTIC_ONLY_TOOLS
-        ]
+    def _verify(self, sensor_id, changed_metrics, live_after, thresh):
+        if not changed_metrics:
+            return False, 0.0, "N/A — no remote reading changed"
+        lines, ratios, all_pass = [], [], True
+        for m in changed_metrics:
+            if m not in thresh or m not in live_after:
+                continue
+            ratio = _margin_ratio(sensor_id, m, live_after[m])
+            ratios.append(ratio)
+            passed = ratio >= 0
+            all_pass = all_pass and passed
+            lines.append(f"{m} {_pct(live_after[m])} vs {thresh[m]} → {'PASS' if passed else 'FAIL'}")
+        worst = min(ratios) if ratios else 0.0
+        return all_pass, worst, "; ".join(lines)
 
-        if not action_tools_called:
-            # The model analyzed but took no action — this is never allowed.
-            # Force a real decision: escalate, since we have no evidence a fix is safe to apply.
-            await self._cb(websocket_callback, {
-                "type": "agent_reasoning",
-                "alert_id": alert_id,
-                "message": "⚠️ No remediation action was taken — forcing escalation to a human operator."
-            })
-            forced_result = await execute_tool("escalate_to_operator", {
-                "alert_id": alert_id,
-                "sensor_id": sensor_id,
-                "diagnosis": final_text[:300] or "Agent analyzed the alert but did not select a remediation action.",
-                "actions_taken": [],
-                "recommended_next_steps": ["Manual review required — agent did not act automatically."],
-                "urgency": "high",
-            })
-            tool_results.append({"tool": "escalate_to_operator", "args": {"alert_id": alert_id}, "result": forced_result})
-            action_tools_called = ["escalate_to_operator"]
-
-        # ── parse final summary ────────────────────────────────────
-        parsed     = self._parse_summary(final_text)
-        confidence = parsed.get("confidence", 0.5)
-
-        # ── ESCALATION IS DRIVEN BY FAULT TYPE, NOT A CONFIDENCE NUMBER ──
-        # Escalated only if a human genuinely needs to go physically do something. This is
-        # decided from a HARD FACT — was escalate_to_operator or emergency_shutdown actually
-        # called — not from the model's free-text "OUTCOME:" line. That line is fragile: if
-        # the model's final message ever skips the exact tag (e.g. it just writes a casual
-        # completion summary after several tool calls), a text parse would silently fall
-        # back to a default and could force an escalation with no relation to what actually
-        # happened. A real tool call is not fragile in that way, so that's the only signal
-        # used here.
-        TICKET_ONLY_ACTIONS = {"create_maintenance_work_order"}
-        escalated = any(t["tool"] in ESCALATION_TOOLS for t in tool_results)
-
-        from backend.tools.sensor_state import THRESHOLDS as SENSOR_THRESHOLDS
-        LOW_ALERT_METRICS = {"flow_m3s", "speed_m_s"}  # for these, LOW is bad
-
-        def _readings_verified_safe() -> bool:
-            thresh = SENSOR_THRESHOLDS.get(sensor_id, {})
-            saw_any_change = False
-            for t in tool_results:
-                changes = (t.get("result") or {}).get("sensor_changes") or {}
-                for metric, delta in changes.items():
-                    to_val = delta.get("to") if isinstance(delta, dict) else None
-                    if to_val is None or metric not in thresh:
-                        continue
-                    saw_any_change = True
-                    is_low_alert = metric in LOW_ALERT_METRICS
-                    still_bad = (to_val < thresh[metric]) if is_low_alert else (to_val > thresh[metric])
-                    if still_bad:
-                        return False
-            return saw_any_change
-
-        verified_fix = _readings_verified_safe()
-        real_remediation_used = any(
-            t not in DIAGNOSTIC_ONLY_TOOLS and t not in TICKET_ONLY_ACTIONS and t not in ESCALATION_TOOLS
-            for t in action_tools_called
+    async def _narrate(self, sensor_id, alert_type, diag, verify_lines, confidence, escalated) -> str:
+        """One optional Qwen call purely to phrase the incident nicely. The decision
+        was already made deterministically above — if this call fails, times out, or
+        is disabled, the incident still completes with a plain template."""
+        fallback = (
+            f"{sensor_id} — {alert_type}. {diag.reason} "
+            f"Verification: {verify_lines}. Confidence {confidence:.0%}. "
+            f"{'Escalated for human review.' if escalated else 'Auto-resolved.'}"
         )
+        if not QWEN_API_KEY:
+            return fallback
+        try:
+            resp = await asyncio.wait_for(self.client.chat.completions.create(
+                model=QWEN_MODEL,
+                messages=[
+                    {"role": "system", "content": (
+                        "Rewrite the following factual incident summary as 2-3 clear, "
+                        "professional sentences for a factory incident report. Do not add "
+                        "new facts, numbers, or conclusions beyond what's given — just "
+                        "phrase it clearly for a human reader."
+                    )},
+                    {"role": "user", "content": fallback},
+                ],
+                temperature=0.3, max_tokens=200,
+            ), timeout=8)
+            text = resp.choices[0].message.content
+            return text.strip() if text else fallback
+        except Exception:
+            return fallback
 
-        # ── ADVISORY (new): a temporary/remote fix saved the equipment right now, but
-        # that doesn't mean the underlying condition should be forgotten — send a
-        # low-priority, informational notification recommending a technician confirm
-        # there's no recurring root cause, WITHOUT requiring a human decision or
-        # flipping the incident to ESCALATED. This is the "auto-resolve + advisory
-        # report" tier: resolved now, flagged for a real look later.
-        if not escalated and real_remediation_used:
-            advisory_note = (
-                f"Automated action stabilized {sensor_id} — this is a real-time fix, "
-                f"not a permanent repair. Recommend a technician confirms no recurring "
-                f"root cause during their next routine round (non-urgent)."
-                if verified_fix else
-                f"Automated action was taken on {sensor_id}, but sensor readings don't "
-                f"yet fully confirm the fix held — recommend a follow-up check soon."
-            )
-            advisory_result = await execute_tool("escalate_to_operator", {
-                "alert_id": alert_id,
-                "sensor_id": sensor_id,
-                "diagnosis": (parsed.get("root_cause") or final_text[:300]),
-                "actions_taken": action_tools_called,
-                "recommended_next_steps": [advisory_note],
-                "urgency": "info",
-            })
-            # Appended AFTER escalated is already computed, so this advisory notification
-            # never flips the incident's status — it stays AUTO_RESOLVED either way.
-            tool_results.append({"tool": "escalate_to_operator", "args": {"alert_id": alert_id}, "result": advisory_result})
-            action_tools_called.append("escalate_to_operator (advisory)")
-
-        log_decision(
-            alert_id=alert_id,
-            reasoning=final_text,
-            confidence=confidence,
-            action_taken=json.dumps(action_tools_called),
-            action_result={"tools": tool_results, "summary": parsed},
-            escalated=escalated
-        )
-
-        # generate report
-        report = self._build_report(alert_id, alert, tool_results, final_text, parsed)
-        save_report(alert_id, report)
-        update_incident_status(alert_id, "escalated" if escalated else "resolved")
-
-        action_summary = ", ".join(action_tools_called)
-        reason_tag = ""
-        status_msg = (
-            f"🚨 ESCALATED{reason_tag} — confidence {confidence:.0%} — action: {action_summary}"
-            if escalated else
-            f"✅ AUTO-RESOLVED — confidence {confidence:.0%} — action: {action_summary}"
-        )
-        await self._cb(websocket_callback, {
-            "type": "agent_complete",
-            "alert_id": alert_id,
-            "escalated": escalated,
-            "confidence": confidence,
-            "message": status_msg
-        })
-
-        return {
-            "alert_id":     alert_id,
-            "status":       "escalated" if escalated else "resolved",
-            "confidence":   confidence,
-            "escalated":    escalated,
-            "tool_results": tool_results,
-            "summary":      parsed,
-        }
-
-    # ── helpers ────────────────────────────────────────────────────
     async def _cb(self, fn, data):
         if fn:
             try:
@@ -614,49 +595,12 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
             except Exception:
                 pass
 
-    def _parse_summary(self, text: str) -> dict:
-        # Outcome default no longer matters for the escalation decision (that's now based
-        # purely on real tool calls, see process_alert), but keep a sensible default here
-        # for display/logging purposes only.
-        result = {"root_cause": "Analysis complete", "confidence": 0.75,
-                  "actions_taken": [], "outcome": "ESCALATED_TO_HUMAN", "next_steps": ""}
-        if not text:
-            return result
-        for raw_line in text.split("\n"):
-            line = raw_line.strip().strip("*").strip()
-            upper = line.upper()
-            if "ROOT_CAUSE:" in upper:
-                idx = upper.find("ROOT_CAUSE:")
-                result["root_cause"] = line[idx + len("ROOT_CAUSE:"):].strip()
-            elif "CONFIDENCE:" in upper:
-                idx = upper.find("CONFIDENCE:")
-                try:
-                    v = line[idx + len("CONFIDENCE:"):].strip().replace("%", "")
-                    val = float(v)
-                    result["confidence"] = val / 100 if val > 1 else val
-                except Exception:
-                    pass
-            elif "OUTCOME:" in upper:
-                idx = upper.find("OUTCOME:")
-                result["outcome"] = line[idx + len("OUTCOME:"):].strip()
-            elif "NEXT_STEPS:" in upper:
-                idx = upper.find("NEXT_STEPS:")
-                result["next_steps"] = line[idx + len("NEXT_STEPS:"):].strip()
-        return result
-
-    def _build_report(self, alert_id, alert, tool_results, reasoning, summary) -> str:
-        # De-duplicate: if the same tool was called multiple times with the same outcome
-        # message, show it once with a count, instead of repeating the full line N times.
+    def _build_report(self, alert_id, alert, tool_results, narrative, diag, confidence, escalated) -> str:
         seen = {}
         for t in tool_results:
-            key = (t['tool'], t['result'].get('message', 'done'))
+            key = (t["tool"], t["result"].get("message", "done"))
             seen[key] = seen.get(key, 0) + 1
-        lines = []
-        for (tool, msg), count in seen.items():
-            suffix = f" (×{count})" if count > 1 else ""
-            lines.append(f"- {tool}{suffix}: {msg}")
-        tools_used = "\n".join(lines)
-
+        lines = [f"- {tool}{f' (×{c})' if c > 1 else ''}: {msg}" for (tool, msg), c in seen.items()]
         return f"""# Incident Report — {alert_id}
 **Generated:** {datetime.utcnow().isoformat()}
 
@@ -665,21 +609,19 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
 - Type: {alert.get('alert_type')}
 - Severity: {alert.get('severity','').upper()}
 
-## Root Cause
-{summary.get('root_cause','N/A')}
+## Diagnosis
+**Category:** {diag.category}
+{diag.reason}
 
-## Agent Confidence
-{summary.get('confidence', 0):.0%}
+## Confidence
+{confidence:.0%}
 
 ## Actions Taken
-{tools_used or 'None'}
+{chr(10).join(lines) or 'None'}
 
 ## Outcome
-{summary.get('outcome','N/A')}
+{'ESCALATED_TO_HUMAN' if escalated else 'AUTO_RESOLVED'}
 
-## Next Steps
-{summary.get('next_steps','N/A')}
-
-## Agent Reasoning
-{reasoning[:1000]}
+## Narrative
+{narrative}
 """
