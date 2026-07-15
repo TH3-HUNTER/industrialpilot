@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from backend.tools.tools import TOOL_DEFINITIONS, execute_tool
 from backend.db.database import (
     insert_incident, update_incident_status,
-    log_decision, log_remediation, save_report
+    log_decision, save_report
 )
 
 load_dotenv()
@@ -98,9 +98,13 @@ MOTORS (Induction motors, AC drives):
   rising after fan, THEN reduce load. Both together for severe cases.
 - Vibration >2× threshold = likely bearing failure imminent. Do not just throttle —
   throttling does not fix bearings. Shutdown is mandatory to prevent shaft damage.
-- Insulation class F motors (standard) max winding temp is 155°C. Shell temp alert
-  threshold at 85°C leaves a reasonable margin. At 100°C+, permanent insulation
-  degradation begins — emergency shutdown required.
+- Insulation class F motors (standard) max winding temp is 155°C. 85°C is a common
+  early-warning (yellow zone) figure in general industry practice, but the ACTUAL
+  alert threshold for the specific motor you are handling may be higher — always use
+  the "threshold" value given in the incoming alert data or get_sensor_history result,
+  never assume 85°C is the real trip point. At 100°C+, permanent insulation
+  degradation typically begins regardless of the configured alert threshold —
+  emergency shutdown required at that point either way.
 - Current imbalance between phases >5% = likely electrical fault, not mechanical.
 - Overcurrent without overtemperature = electrical issue (short, fault), not thermal.
   Overcurrent WITH overtemperature = thermal overload from sustained high load.
@@ -342,7 +346,10 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
 
                     result = await execute_tool(tool_name, tool_args)
                     tool_results.append({"tool": tool_name, "args": tool_args, "result": result})
-                    log_remediation(alert_id, tool_name, tool_args, result, result.get("success", True))
+                    # NOTE: execute_tool() in tools.py already calls log_remediation() internally
+                    # for every tool with an alert_id. Logging it again here was writing every
+                    # real action to the DB twice, which is why every incident showed each
+                    # action as "(x2)" even though it only happened once.
 
                     sensor_changes = result.get("sensor_changes", {})
                     await self._cb(websocket_callback, {
@@ -474,23 +481,41 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
             or any(t["tool"] in ESCALATION_TOOLS for t in tool_results)
         )
         verified_fix = _readings_verified_safe()
-        if (ticket_only_resolution or verified_fix) and not model_chose_escalation:
+
+        # POLICY: sensor-verified proof is NOT enough on its own to skip human sign-off for
+        # a real remediation action — the model's own stated confidence must also clear
+        # CONFIDENCE_THRESHOLD. The only exemption is Rule 3/4: a ticket-only mechanical
+        # resolution has nothing to verify by design (no remote reading can confirm a
+        # bearing repair), so that path alone bypasses the confidence gate.
+        if ticket_only_resolution and not model_chose_escalation:
             below_threshold = False
             escalated = False
 
         if below_threshold and not any(t["tool"] in ESCALATION_TOOLS for t in tool_results):
-            # A remediation tool WAS called, but confidence didn't meet the bar.
-            # Notify the operator that an action was taken under uncertainty — they
-            # should verify it, not just be told "resolved".
+            # A remediation tool WAS called, but the model's stated confidence didn't meet
+            # the bar. Per policy, this still requires human sign-off even if sensor data
+            # looks fine — but tell the operator honestly which situation they're in, so a
+            # "just needs a quick sign-off" case doesn't read the same as a "genuinely
+            # uncertain, please double-check" case.
+            if verified_fix:
+                next_step = (
+                    f"Sensor readings confirm the action brought {sensor_id} back within its "
+                    f"configured safe range. The model's stated confidence was only {confidence:.0%} "
+                    f"(below the {CONFIDENCE_THRESHOLD:.0%} sign-off bar), so this still needs a human "
+                    f"to confirm and close it out — but this is a quick sign-off, not an unresolved fault."
+                )
+            else:
+                next_step = (
+                    f"Confidence was {confidence:.0%}, below the {CONFIDENCE_THRESHOLD:.0%} threshold, "
+                    f"and sensor readings do not yet confirm the fix worked — please verify in person."
+                )
             verify_result = await execute_tool("escalate_to_operator", {
                 "alert_id": alert_id,
                 "sensor_id": sensor_id,
                 "diagnosis": (parsed.get("root_cause") or final_text[:300]),
                 "actions_taken": action_tools_called,
-                "recommended_next_steps": [
-                    f"Confidence was {confidence:.0%}, below the {CONFIDENCE_THRESHOLD:.0%} threshold — verify the remediation actually fixed the issue."
-                ],
-                "urgency": "medium",
+                "recommended_next_steps": [next_step],
+                "urgency": "low" if verified_fix else "medium",
             })
             tool_results.append({"tool": "escalate_to_operator", "args": {"alert_id": alert_id}, "result": verify_result})
             action_tools_called.append("escalate_to_operator")
