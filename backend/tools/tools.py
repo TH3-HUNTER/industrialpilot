@@ -188,20 +188,27 @@ async def execute_tool(tool_name: str, tool_args: dict) -> dict:
 
 async def _get_sensor_history(sensor_id: str, hours: int = 6, **_) -> dict:
     import random
-    from backend.tools.sensor_state import THRESHOLDS
+    from backend.tools.sensor_state import THRESHOLDS, WARN_THRESHOLDS
     live = get_state(sensor_id)
     if not live:
         return {"success": False, "error": f"Sensor {sensor_id} not found"}
     thresholds = THRESHOLDS.get(sensor_id, {})
+    warn_thresholds = WARN_THRESHOLDS.get(sensor_id, {})
     trend_note = []
     for metric, val in live.items():
         t = thresholds.get(metric)
-        trend_note.append(f"{metric}={val}" + (f" (alert threshold={t})" if t is not None else ""))
+        w = warn_thresholds.get(metric)
+        note = f"{metric}={val}"
+        if w is not None or t is not None:
+            note += f" (warn={w}, critical={t})"
+        trend_note.append(note)
     return {
         "success": True, "sensor_id": sensor_id,
         "current_live_values": live,
-        "alert_thresholds": thresholds,  # the REAL configured limits for this exact unit —
-        # use these, not general textbook figures, when reasoning about margin/severity
+        "alert_thresholds": thresholds,          # critical/trip levels
+        "warn_thresholds": warn_thresholds,       # early-warning levels
+        # use these REAL configured levels, not general textbook figures, when
+        # reasoning about margin/severity
         "hours_retrieved": hours,
         "trend": "INCREASING" if any(v > 0 for v in live.values()) else "STABLE",
         "summary": f"Current readings for {sensor_id}: {', '.join(trend_note)}. Data from last {hours}h retrieved."
