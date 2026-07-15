@@ -278,25 +278,29 @@ knowledge). Mark each one PASS or FAIL:
   PASS = final value is back within the safe side of the real threshold
   FAIL = final value is still on the unsafe side of the real threshold
 
-STEP 3 — Set CONFIDENCE using this table. No exceptions, no rounding down out
-of caution once you've actually done Step 2:
-  - Every changed metric is PASS → CONFIDENCE = 0.90 (a verified fix is not a
-    guess — do not report 0.75 here just because the initial diagnosis felt
-    routine; the diagnosis being routine and the fix being VERIFIED are two
-    different facts, and Step 3 is asking about the second one)
-  - Every changed metric is PASS but one was within 5% of the threshold
-    (a narrow margin) → CONFIDENCE = 0.80
-  - At least one changed metric is still FAIL → CONFIDENCE = your Step 1
-    number, capped at 0.60 (the fix not fully working is new evidence the
-    diagnosis may be incomplete)
+STEP 3 — Set CONFIDENCE using this table. Pick a specific number WITHIN the
+given range based on how much margin the final reading has — don't just
+default to the same round number every time; a value that landed barely
+inside safe range should score lower in the range than one with wide margin:
+  - Every changed metric is PASS → CONFIDENCE = 0.86-0.97, scaled by margin
+    (a value sitting right at the edge of safe → ~0.86; a value with 20%+
+    headroom below the threshold → ~0.95+). A verified fix is not a guess —
+    don't report 0.75 here just because the initial diagnosis felt routine;
+    the diagnosis being routine and the fix being VERIFIED are two different
+    facts, and this step is asking about the second one.
+  - Every changed metric is PASS but at least one is within 5% of the
+    threshold (a narrow margin) → CONFIDENCE = 0.78-0.85
+  - At least one changed metric is still FAIL → CONFIDENCE = 0.35-0.60,
+    scaled by how far off it still is (closer to safe → higher in the range)
   - You only created a maintenance ticket or escalated (no remediation tool
-    changed a physical reading) → CONFIDENCE = your Step 1 number as-is,
-    Step 2/3 don't apply since there is nothing to verify
+    changed a physical reading) → use your Step 1 number as-is; Step 2/3
+    don't apply since there is nothing to verify
 
 Worked example: OVERCURRENT alert, current_a threshold 58.0. You call
-reduce_motor_load, final current_a lands at 48.4 → PASS (well clear of 58.0).
-Temp threshold 105, final temp_c lands at 62.6 → PASS. Both PASS with real
-margin → CONFIDENCE = 0.90, regardless of how you scored Step 1.
+reduce_motor_load, final current_a lands at 48.4 (16.6% below trip) → PASS
+with moderate margin. Temp threshold 105, final temp_c lands at 62.6 (40%+
+below trip) → PASS with wide margin. Both PASS, one with wide margin →
+CONFIDENCE around 0.93, not a flat 0.90 or 0.75.
 
 ═══════════════════════════════════════════════════════════════
 OUTPUT FORMAT — MANDATORY, EXACTLY AS SHOWN
@@ -499,26 +503,24 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
         parsed     = self._parse_summary(final_text)
         confidence = parsed.get("confidence", 0.5)
 
-        # Escalated if ANY of these are true:
-        #  1. The model itself said ESCALATED_TO_HUMAN
-        #  2. An escalation-type tool was called (always requires human follow-through)
-        #  3. Confidence is below threshold — even if a remediation tool was called,
-        #     low confidence means we cannot trust the fix was correct, so a human
-        #     must still review it. This was the bug: a 75% confidence fix was being
-        #     marked AUTO-RESOLVED because only tool type was checked, not confidence.
-        below_threshold = confidence < CONFIDENCE_THRESHOLD
+        # ── ESCALATION IS DRIVEN BY FAULT TYPE, NOT A CONFIDENCE NUMBER ──
+        # Escalated only if a human genuinely needs to go physically do something:
+        #  1. The model itself decided ESCALATED_TO_HUMAN (electrical faults per Rule 5,
+        #     imminent hazards, or a diagnosis it genuinely isn't sure enough about to act on)
+        #  2. escalate_to_operator or emergency_shutdown was actually called
+        # A successful remote fix (VFD speed, valve, unloader, firing rate, etc.) is
+        # AUTO_RESOLVED regardless of the stated confidence number — confidence is still
+        # reported for the audit trail, it just no longer forces a human review on its own.
+        ESCALATION_TOOLS = {"escalate_to_operator", "emergency_shutdown"}  # (same set as above)
+        TICKET_ONLY_ACTIONS = {"create_maintenance_work_order"}
+
         escalated = (
             parsed.get("outcome", "").upper() == "ESCALATED_TO_HUMAN"
             or any(t["tool"] in ESCALATION_TOOLS for t in tool_results)
-            or below_threshold
         )
 
-        # ── DETERMINISTIC BACKSTOP: don't trust the model's stated confidence alone ──
-        # The model is supposed to raise its confidence after seeing a fix verified by
-        # sensor_changes, but LLMs are inconsistent about actually doing this. Instead of
-        # relying on that, check the real numbers ourselves against the real THRESHOLDS.
         from backend.tools.sensor_state import THRESHOLDS as SENSOR_THRESHOLDS
-        LOW_ALERT_METRICS = {"flow_m3s", "speed_m_s"}  # for these, LOW is bad, so "fixed" means value >= threshold
+        LOW_ALERT_METRICS = {"flow_m3s", "speed_m_s"}  # for these, LOW is bad
 
         def _readings_verified_safe() -> bool:
             thresh = SENSOR_THRESHOLDS.get(sensor_id, {})
@@ -533,57 +535,42 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
                     is_low_alert = metric in LOW_ALERT_METRICS
                     still_bad = (to_val < thresh[metric]) if is_low_alert else (to_val > thresh[metric])
                     if still_bad:
-                        return False  # at least one reading never actually came back in range
-            return saw_any_change  # True only if we saw real changes AND none were still bad
+                        return False
+            return saw_any_change
 
-        # Rule 3/4 exemption: if the ONLY action taken was a maintenance ticket (mechanical
-        # fault correctly handled per Rule 4), that is ALREADY a valid AUTO_RESOLVED outcome
-        # by design — there is no remote reading to verify, so the confidence gate shouldn't
-        # apply to it at all.
-        TICKET_ONLY_ACTIONS = {"create_maintenance_work_order"}
-        ticket_only_resolution = bool(action_tools_called) and all(
-            t in TICKET_ONLY_ACTIONS for t in action_tools_called
+        verified_fix = _readings_verified_safe()
+        real_remediation_used = any(
+            t not in DIAGNOSTIC_ONLY_TOOLS and t not in TICKET_ONLY_ACTIONS and t not in ESCALATION_TOOLS
+            for t in action_tools_called
         )
 
-        model_chose_escalation = (
-            parsed.get("outcome", "").upper() == "ESCALATED_TO_HUMAN"
-            or any(t["tool"] in ESCALATION_TOOLS for t in tool_results)
-        )
-        verified_fix = _readings_verified_safe()  # kept for logging/messaging only —
-        # no longer used to bypass the confidence gate. The fix belongs in the model's
-        # own CONFIDENCE number (see Stage 2 scoring below), not a code-side override.
-        if ticket_only_resolution and not model_chose_escalation:
-            below_threshold = False
-            escalated = False
-
-        if below_threshold and not any(t["tool"] in ESCALATION_TOOLS for t in tool_results):
-            # A remediation tool WAS called, but the model's stated confidence didn't meet
-            # the bar. Per policy, this still requires human sign-off even if sensor data
-            # looks fine — but tell the operator honestly which situation they're in, so a
-            # "just needs a quick sign-off" case doesn't read the same as a "genuinely
-            # uncertain, please double-check" case.
-            if verified_fix:
-                next_step = (
-                    f"Sensor readings confirm the action brought {sensor_id} back within its "
-                    f"configured safe range. The model's stated confidence was only {confidence:.0%} "
-                    f"(below the {CONFIDENCE_THRESHOLD:.0%} sign-off bar), so this still needs a human "
-                    f"to confirm and close it out — but this is a quick sign-off, not an unresolved fault."
-                )
-            else:
-                next_step = (
-                    f"Confidence was {confidence:.0%}, below the {CONFIDENCE_THRESHOLD:.0%} threshold, "
-                    f"and sensor readings do not yet confirm the fix worked — please verify in person."
-                )
-            verify_result = await execute_tool("escalate_to_operator", {
+        # ── ADVISORY (new): a temporary/remote fix saved the equipment right now, but
+        # that doesn't mean the underlying condition should be forgotten — send a
+        # low-priority, informational notification recommending a technician confirm
+        # there's no recurring root cause, WITHOUT requiring a human decision or
+        # flipping the incident to ESCALATED. This is the "auto-resolve + advisory
+        # report" tier: resolved now, flagged for a real look later.
+        if not escalated and real_remediation_used:
+            advisory_note = (
+                f"Automated action stabilized {sensor_id} — this is a real-time fix, "
+                f"not a permanent repair. Recommend a technician confirms no recurring "
+                f"root cause during their next routine round (non-urgent)."
+                if verified_fix else
+                f"Automated action was taken on {sensor_id}, but sensor readings don't "
+                f"yet fully confirm the fix held — recommend a follow-up check soon."
+            )
+            advisory_result = await execute_tool("escalate_to_operator", {
                 "alert_id": alert_id,
                 "sensor_id": sensor_id,
                 "diagnosis": (parsed.get("root_cause") or final_text[:300]),
                 "actions_taken": action_tools_called,
-                "recommended_next_steps": [next_step],
-                "urgency": "low" if verified_fix else "medium",
+                "recommended_next_steps": [advisory_note],
+                "urgency": "info",
             })
-            tool_results.append({"tool": "escalate_to_operator", "args": {"alert_id": alert_id}, "result": verify_result})
-            action_tools_called.append("escalate_to_operator")
+            # Appended AFTER escalated is already computed, so this advisory notification
+            # never flips the incident's status — it stays AUTO_RESOLVED either way.
+            tool_results.append({"tool": "escalate_to_operator", "args": {"alert_id": alert_id}, "result": advisory_result})
+            action_tools_called.append("escalate_to_operator (advisory)")
 
         log_decision(
             alert_id=alert_id,
@@ -600,7 +587,7 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
         update_incident_status(alert_id, "escalated" if escalated else "resolved")
 
         action_summary = ", ".join(action_tools_called)
-        reason_tag = " (low confidence)" if below_threshold and escalated else ""
+        reason_tag = ""
         status_msg = (
             f"🚨 ESCALATED{reason_tag} — confidence {confidence:.0%} — action: {action_summary}"
             if escalated else
