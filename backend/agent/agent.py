@@ -254,12 +254,12 @@ LOW_WATER_FLOW on boiler → open_boiler_feedwater_valve immediately, UNLESS
 FLAME_FAILURE on boiler → emergency_shutdown + escalate_to_operator.
 
 ═══════════════════════════════════════════════════════════════
-CONFIDENCE SCORING
+CONFIDENCE SCORING — MECHANICAL PROCEDURE, NOT A JUDGMENT CALL
 ═══════════════════════════════════════════════════════════════
-Your CONFIDENCE is a report on the OUTCOME, not just the initial diagnosis.
-Score it in two stages:
+Do not eyeball this number. Compute it with the exact procedure below, in
+order, and show your work in the VERIFICATION line required in OUTPUT FORMAT.
 
-STAGE 1 — diagnostic confidence (before you act):
+STEP 1 — Diagnostic confidence, before you act:
 0.90-1.00: Single unambiguous cause, clear sensor pattern, low-risk fix
 0.80-0.89: Clear primary cause, moderate risk, standard procedure applies
 0.65-0.79: Primary cause reasonably clear even with a secondary contributing
@@ -268,29 +268,46 @@ STAGE 1 — diagnostic confidence (before you act):
 0.40-0.64: Contradictory readings, sensor may be faulty, unknown failure mode → escalate
 Below 0.40: Severely insufficient data, extreme safety risk → emergency_shutdown + escalate
 
-STAGE 2 — after you act, REVISE that number using the tool_result you actually got:
-- If the tool result's sensor_changes show the reading returned to within the
-  normal operating range (not just "moved in the right direction" — actually
-  back under threshold), that is direct physical confirmation the fix worked.
-  Raise your diagnostic confidence by 10-20 points to reflect this — a routine
-  fault diagnosed at 0.75 that you then WATCHED normalize back to 0.85+ range
-  is now a verified fix, not a guess, and should typically be reported at
-  0.85-0.95.
-- If the reading only partially improved, or moved back toward threshold but
-  is still outside the safe range, keep your confidence in the original
-  diagnostic band — do not inflate it just because you took an action.
-- If the reading didn't move, or moved the wrong way, drop confidence below
-  0.65 regardless of how clear the initial diagnosis seemed — the fix not
-  working is evidence your diagnosis may be wrong.
-Never report your Stage 1 number unchanged once you have tool results to check
-it against. CONFIDENCE in your final summary is always a Stage 2 number.
+STEP 2 — If you called a real remediation tool (not just a maintenance ticket
+or escalation), go through every metric that appeared in a tool_result's
+sensor_changes. Take the LAST "to" value you saw for that metric across all
+your tool calls (if you adjusted it more than once, use the final number, not
+the first attempt). Compare that final number against the real threshold from
+get_sensor_history's alert_thresholds (not a number you remember from general
+knowledge). Mark each one PASS or FAIL:
+  PASS = final value is back within the safe side of the real threshold
+  FAIL = final value is still on the unsafe side of the real threshold
+
+STEP 3 — Set CONFIDENCE using this table. No exceptions, no rounding down out
+of caution once you've actually done Step 2:
+  - Every changed metric is PASS → CONFIDENCE = 0.90 (a verified fix is not a
+    guess — do not report 0.75 here just because the initial diagnosis felt
+    routine; the diagnosis being routine and the fix being VERIFIED are two
+    different facts, and Step 3 is asking about the second one)
+  - Every changed metric is PASS but one was within 5% of the threshold
+    (a narrow margin) → CONFIDENCE = 0.80
+  - At least one changed metric is still FAIL → CONFIDENCE = your Step 1
+    number, capped at 0.60 (the fix not fully working is new evidence the
+    diagnosis may be incomplete)
+  - You only created a maintenance ticket or escalated (no remediation tool
+    changed a physical reading) → CONFIDENCE = your Step 1 number as-is,
+    Step 2/3 don't apply since there is nothing to verify
+
+Worked example: OVERCURRENT alert, current_a threshold 58.0. You call
+reduce_motor_load, final current_a lands at 48.4 → PASS (well clear of 58.0).
+Temp threshold 105, final temp_c lands at 62.6 → PASS. Both PASS with real
+margin → CONFIDENCE = 0.90, regardless of how you scored Step 1.
 
 ═══════════════════════════════════════════════════════════════
 OUTPUT FORMAT — MANDATORY, EXACTLY AS SHOWN
 ═══════════════════════════════════════════════════════════════
 After all tool calls, end with EXACTLY:
 ROOT_CAUSE: [specific engineering diagnosis — cite which sensor, what value, what it indicates]
-CONFIDENCE: [0.0-1.0]
+VERIFICATION: [if you called a remediation tool: list each changed metric as
+  "metric final_value vs threshold → PASS/FAIL" per Step 2 above. If you only
+  created a ticket or escalated: write "N/A — no remote reading to verify".]
+CONFIDENCE: [0.0-1.0 — must follow mechanically from the VERIFICATION line
+  above per the Step 3 table; these two lines must agree with each other]
 ACTIONS_TAKEN: [list every tool called and why]
 OUTCOME: [AUTO_RESOLVED or ESCALATED_TO_HUMAN]
 NEXT_STEPS: [concrete next actions for the operator or technician]"""
@@ -532,13 +549,9 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
             parsed.get("outcome", "").upper() == "ESCALATED_TO_HUMAN"
             or any(t["tool"] in ESCALATION_TOOLS for t in tool_results)
         )
-        verified_fix = _readings_verified_safe()
-
-        # POLICY: sensor-verified proof is NOT enough on its own to skip human sign-off for
-        # a real remediation action — the model's own stated confidence must also clear
-        # CONFIDENCE_THRESHOLD. The only exemption is Rule 3/4: a ticket-only mechanical
-        # resolution has nothing to verify by design (no remote reading can confirm a
-        # bearing repair), so that path alone bypasses the confidence gate.
+        verified_fix = _readings_verified_safe()  # kept for logging/messaging only —
+        # no longer used to bypass the confidence gate. The fix belongs in the model's
+        # own CONFIDENCE number (see Stage 2 scoring below), not a code-side override.
         if ticket_only_resolution and not model_chose_escalation:
             below_threshold = False
             escalated = False
@@ -620,7 +633,7 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
 
     def _parse_summary(self, text: str) -> dict:
         result = {"root_cause": "Analysis complete", "confidence": 0.75,
-                  "actions_taken": [], "outcome": "AUTO_RESOLVED", "next_steps": ""}
+                  "actions_taken": [], "outcome": "ESCALATED_TO_HUMAN", "next_steps": ""}
         if not text:
             return result
         for line in text.split("\n"):
