@@ -188,15 +188,20 @@ async def execute_tool(tool_name: str, tool_args: dict) -> dict:
 
 async def _get_sensor_history(sensor_id: str, hours: int = 6, **_) -> dict:
     import random
+    from backend.tools.sensor_state import THRESHOLDS
     live = get_state(sensor_id)
     if not live:
         return {"success": False, "error": f"Sensor {sensor_id} not found"}
+    thresholds = THRESHOLDS.get(sensor_id, {})
     trend_note = []
     for metric, val in live.items():
-        trend_note.append(f"{metric}={val}")
+        t = thresholds.get(metric)
+        trend_note.append(f"{metric}={val}" + (f" (alert threshold={t})" if t is not None else ""))
     return {
         "success": True, "sensor_id": sensor_id,
         "current_live_values": live,
+        "alert_thresholds": thresholds,  # the REAL configured limits for this exact unit —
+        # use these, not general textbook figures, when reasoning about margin/severity
         "hours_retrieved": hours,
         "trend": "INCREASING" if any(v > 0 for v in live.values()) else "STABLE",
         "summary": f"Current readings for {sensor_id}: {', '.join(trend_note)}. Data from last {hours}h retrieved."
