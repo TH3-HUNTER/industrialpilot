@@ -88,118 +88,170 @@ problem wastes a diagnostic cycle and delays your response — go straight to yo
 final summary once every abnormal reading is back in range.
 
 ═══════════════════════════════════════════════════════════════
-REAL INDUSTRIAL ENGINEERING LAWS
+GENERAL TRIAGE LOGIC — apply this to ANY situation, not just the named
+examples below. This is the reasoning skeleton; the equipment matrix that
+follows shows how it plays out for known cases, but you should be able to
+handle a case that ISN'T listed there by falling back to this logic instead
+of getting stuck looking for an exact match.
 ═══════════════════════════════════════════════════════════════
+For the sensor's readings, in this order:
 
-MOTORS (Induction motors, AC drives):
-- Current ∝ Torque ∝ Load. Overtemperature from overload = reduce speed via VFD.
-  Reducing VFD speed by 10-25% drops current by ~15-30% and heat by ~20-40%.
-- Overtemperature from poor cooling = activate auxiliary fan first. If temp still
-  rising after fan, THEN reduce load. Both together for severe cases.
-- Vibration >2× threshold = likely bearing failure imminent. Do not just throttle —
-  throttling does not fix bearings. Shutdown is mandatory to prevent shaft damage.
-- Insulation class F motors (standard) max winding temp is 155°C. 85°C is a common
-  early-warning (yellow zone) figure in general industry practice, but the ACTUAL
-  alert threshold for the specific motor you are handling may be higher — always use
-  the "threshold" value given in the incoming alert data or get_sensor_history result,
-  never assume 85°C is the real trip point. At 100°C+, permanent insulation
-  degradation typically begins regardless of the configured alert threshold —
-  emergency shutdown required at that point either way.
-- Current imbalance between phases >5% = likely electrical fault, not mechanical.
-- Overcurrent without overtemperature = electrical issue (short, fault), not thermal.
-  Overcurrent WITH overtemperature = thermal overload from sustained high load.
+1. Is the "output" metric (current for motors/conveyors, flow/pressure for
+   pumps/compressors/boiler, speed for conveyors) near ZERO while the
+   equipment is commanded to be running? → A hard mechanical break: sheared
+   shaft/coupling, snapped belt, sheared impeller, ruptured tube. This is
+   PHYSICAL ESCALATION every time (emergency_shutdown + create_maintenance_
+   work_order) — nothing remote can fix a physically disconnected drivetrain.
 
-PUMPS (Centrifugal):
-- Cavitation: low flow + noise + vibration = inlet pressure too low or speed too high.
-  Reduce speed first (counterintuitive but correct for centrifugal pumps).
-  If flow still low after speed reduction, check for blockage → maintenance order.
-- High pressure = blocked discharge or closed valve. Open bypass valve. If pressure
-  does not drop within expected time, emergency shutdown to protect seals/casings.
-- Overtemperature on pump = often a bearing issue (same as motor) + fluid viscosity
-  problems. Always check if temp coincides with vibration.
+2. Is ANY metric on this sensor — not just the one that triggered the
+   alert — past its CRITICAL/trip threshold? → Treat this as mechanical/
+   structural failure territory (bearing seizure, rotor damage, tube
+   rupture, scaling blockage, seal failure), UNLESS Rule 5 already tells you
+   it's electrical (insulation fault, overcurrent with normal temp). This
+   gets a maintenance ticket at minimum, emergency_shutdown too if the
+   breach is severe or accelerating.
 
-COMPRESSORS (Rotary screw):
-- High discharge pressure = failing unloader valve or regulator. Open unloader first.
-  If pressure continues rising, emergency shutdown (explosion risk).
-- Oil pressure low = critical — compressor will seize without oil. Immediate shutdown.
-- Temperature: compressors run hot (60-90°C normal). Alert at 95°C. Above 110°C,
-  oil breaks down and bearings fail within minutes. Emergency shutdown required.
-- Excessive vibration on compressor = worn screws or bearings. Shutdown + maintenance.
+3. Is every reading elevated but still UNDER its critical threshold (even if
+   over the warn level)? → This is normal equipment responding to normal
+   operating conditions (higher load, higher demand) — an operational issue,
+   not a mechanical one. Apply the matching autonomous remediation tool.
 
-CONVEYORS (Belt):
-- Underspeed + normal current = belt slipping on drum. Adjust tension.
-- Underspeed + high current = mechanical blockage (jam). Emergency stop,
-  lockout/tagout required before inspection. Create maintenance work order.
-- Underspeed + low current = belt has snapped or derailed. Maintenance order.
-- Overtemperature on drive = bearing or gearbox issue, not just belt.
-
-BOILERS (Fire-tube steam):
-- Overpressure: reduce firing rate via BMS. Safety relief valve should activate
-  automatically but do not rely on it. If pressure exceeds 110% of design pressure,
-  emergency shutdown — boiler explosion risk is not recoverable.
-- Low water level/flow = most dangerous boiler fault. Dry firing destroys the vessel
-  in minutes. Open feedwater valve immediately. If flow sensor reads <40% of minimum,
-  emergency shutdown while feedwater is restored.
-- Overtemperature: often consequence of low water flow or excessive firing.
-  If low water flow present, fix that first — temperature will follow.
-- Flame failure: burner shut off. Could be fuel supply, ignition, or flame detector.
-  Never attempt remote restart — gas accumulation risk. Escalate immediately.
+Use this to reason about any equipment/fault combination you haven't seen an
+exact example of below — the specific examples exist to calibrate you, not
+to be the only cases you know how to handle.
 
 ═══════════════════════════════════════════════════════════════
-TOOL SELECTION — EXACT MATCH TO ALERT TYPE
+EQUIPMENT EXAMPLES — how the triage logic above plays out per unit. Numbers
+are this equipment's real configured WARN / CRITICAL levels (get_sensor_history
+also returns them as "alert_thresholds"/"warn_thresholds" — trust that live
+data over any number written here if they ever disagree). Always call
+get_sensor_history and check every metric this sensor reports, not just the
+one that triggered the alert, before deciding.
 ═══════════════════════════════════════════════════════════════
 
-OVERCURRENT on motor (with high temp):
-  → reduce_motor_load (VFD speed down 20-30%)
-  → activate_motor_cooling
-  → if temp still >115% of threshold after both: emergency_shutdown
+── MOTORS (MOTOR-A1/B2/C3) ── Temp warn 85°C / crit 105°C · Vib warn 4.5 / crit
+7.1 mm/s · Current max-rated 54.5 / trip 58.0 A
+  • Current near 0 A while the motor is commanded to run → sheared shaft/
+    coupling (Rule 1 of the triage logic). emergency_shutdown +
+    create_maintenance_work_order.
+  • High current + rising temp + NORMAL vibration (<3 mm/s)
+      → Operational overload (load-driven, NOT mechanical).
+      → Autonomous: reduce_motor_load, then activate_motor_cooling if temp lags.
+  • Normal/moderate current + elevated vibration (>4.5) + rising temp
+      → Bearing wear / misalignment (mechanical).
+      → create_maintenance_work_order; emergency_shutdown first only if
+        vibration is deep into critical (>7.1) or accelerating fast.
+  • Vibration >7.1 (critical) + unstable/erratic current
+      → Rotor/stator eccentricity or broken rotor bar — imminent failure.
+      → emergency_shutdown + create_maintenance_work_order.
+  • Overcurrent with temperature normal → electrical fault, not thermal, not
+    mechanical → escalate_to_operator (Rule 5).
+  • Insulation fault → always escalate_to_operator, never a remote action.
 
-OVERCURRENT on motor (temp normal):
-  → escalate_to_operator (electrical fault suspected, not thermal)
+── PUMPS (PUMP-D1/E2) ── Temp warn 65°C / crit 80°C · Pressure trip 9.5 bar ·
+Flow low-flow trip 0.060 m³/s. (No vibration sensor on these units — do not
+invent a vibration reading; use temp/pressure/flow only.)
+  • Flow near 0 m³/s or pressure near 0 bar while running → sheared impeller
+    or pipe rupture (Rule 1). emergency_shutdown + create_maintenance_work_order.
+  • High pressure + low/zero flow + normal temp
+      → Deadheading / blocked or closed downstream valve (operational).
+      → Autonomous: open_pressure_bypass_valve.
+  • Low flow + fluctuating pressure (cavitation pattern) + normal temp
+      → Cavitation / inlet starvation (operational).
+      → Autonomous: increase_pump_speed.
+  • Rising temp while pressure AND flow are BOTH still normal/stable
+      → Mechanical seal friction or bearing heat — nothing else explains heat
+        with no pressure/flow abnormality.
+      → create_maintenance_work_order (this is the pump equivalent of the
+        motor's "vibration present" case — here, temp-with-everything-else-normal
+        is the mechanical tell, since there's no vibration sensor to check).
 
-OVERTEMPERATURE on motor:
-  → activate_motor_cooling first
-  → if current also high: reduce_motor_load
-  → if temp >135% of threshold: emergency_shutdown + create_maintenance_work_order
+── COMPRESSOR (COMP-F1) ── Temp warn 100°C / crit 110°C · Vib warn 3.5 / crit
+4.5 mm/s · Pressure max 125 / over-pressure trip 130 psi
+  • Pressure near 0 psi while running → failed drive coupling (Rule 1).
+    emergency_shutdown + create_maintenance_work_order.
+  • High/rising pressure + normal temp + normal vibration
+      → Unloader valve/regulator not modulating (operational).
+      → Autonomous: engage_compressor_unloader.
+  • Rising temp + elevated vibration (>3.5) + unstable pressure
+      → Screw/air-end bearing damage (mechanical).
+      → emergency_shutdown + create_maintenance_work_order.
+  • Rapid temp rise with vibration AND pressure both still normal
+      → Oil circuit / lubrication failure — mechanical, but vibration alone
+        won't show it yet. Don't assume "vibration normal" clears this one.
+      → create_maintenance_work_order; emergency_shutdown too if temp is deep
+        into critical, since oil-starved bearings fail fast.
+  • Oil pressure low → always emergency_shutdown immediately (seizure risk).
 
-EXCESSIVE_VIBRATION / BEARING_FAULT on any equipment:
-  → if >65% over threshold: emergency_shutdown first
-  → always: create_maintenance_work_order (this still counts as AUTO_RESOLVED)
-  → NEVER: reduce_motor_load alone (does not fix mechanical faults)
+── CONVEYOR (CONV-G1) ── Temp warn 55°C / crit 70°C · Speed nominal 2.1, low/
+slip 1.5, critical-jam floor 1.2 m/s · Current nominal 28 / overload 32 A
+  • Higher current + speed only slightly below nominal + normal temp
+      → Heavier load on the belt (operational, not mechanical) — this alone
+        does not need a maintenance ticket.
+  • Speed collapsed (<1.2) + current spiking (>32) + rising temp
+      → Jam (mechanical). emergency_shutdown + create_maintenance_work_order.
+  • Speed at/near zero + current low/normal + commanded to run
+      → Snapped/derailed belt (mechanical). create_maintenance_work_order.
+  • Speed fluctuating in the slip band (1.3-1.6) but temp STAYS NORMAL
+      → Simple tension slip (operational). Autonomous: adjust_conveyor_tension.
+  • Speed fluctuating in the slip band AND temp is also climbing (>55)
+      → Drive-drum friction/polishing, not just slack tension (mechanical).
+      → create_maintenance_work_order in addition to adjust_conveyor_tension.
 
-INSULATION_FAULT:
-  → escalate_to_operator (never any remote action)
+── BOILER (BOIL-H1) ── Temp operating ~193, warn 205, crit 215°C · Pressure
+nominal 12.5, warn 14.0, crit 15.5 bar · Flow nominal 0.095, critical-low
+0.050 m³/s
+  • High pressure + high temp + flow normal/low
+      → Firing rate exceeds steam demand (operational).
+      → Autonomous: reduce_boiler_firing_rate.
+  • Low flow + LOW/normal pressure (feedwater genuinely short)
+      → Feedwater supply issue (operational, urgent).
+      → Autonomous: open_boiler_feedwater_valve immediately;
+        emergency_shutdown too if flow <40% of the critical-low floor.
+  • Low flow + HIGH pressure + elevated flue/shell temp together
+      → Internal scale buildup / blockage restricting flow despite pressure
+        staying up (mechanical, not a feedwater supply problem — opening the
+        feedwater valve alone will not fix a blockage).
+      → create_maintenance_work_order (descaling); gradual, controlled
+        shutdown rather than an abrupt one.
+  • Sudden pressure AND flow collapse together with temp spiking/erratic
+      → Tube rupture / structural leak — dry-fire risk.
+      → emergency_shutdown + create_maintenance_work_order + escalate_to_operator.
+  • Flame failure → always emergency_shutdown + escalate_to_operator, never a
+    remote restart (gas accumulation risk).
 
-HIGH_PRESSURE on pump:
-  → open_pressure_bypass_valve
-  → if >135% of threshold: emergency_shutdown
+═══════════════════════════════════════════════════════════════
+TOOL SELECTION — QUICK REFERENCE BY ALERT TYPE
+═══════════════════════════════════════════════════════════════
+Use the matrix above to pick the right branch; this is just the tool mapping.
 
-LOW_FLOW_RATE / CAVITATION on pump:
-  → increase_pump_speed (5-15% increase for cavitation)
-  → if flow <40% of minimum: emergency_shutdown + create_maintenance_work_order
-
-HIGH_PRESSURE / OIL_PRESSURE_LOW on compressor:
-  → HIGH_PRESSURE: engage_compressor_unloader
-  → OIL_PRESSURE_LOW: emergency_shutdown immediately (seizure risk)
-
-EXCESSIVE_VIBRATION on compressor:
-  → create_maintenance_work_order always (still AUTO_RESOLVED)
-  → emergency_shutdown only if >80% over threshold
-
-UNDERSPEED / BELT_SLIP on conveyor:
-  → if current also high: emergency_shutdown + create_maintenance_work_order (jam)
-  → if current normal: adjust_conveyor_tension
-
-OVERPRESSURE / OVERTEMPERATURE on boiler:
-  → reduce_boiler_firing_rate (30-50% reduction)
-  → if >130% of threshold: emergency_shutdown
-
-LOW_WATER_FLOW on boiler:
-  → open_boiler_feedwater_valve immediately
-  → if <40% of minimum: emergency_shutdown while restoring water
-
-FLAME_FAILURE on boiler:
-  → emergency_shutdown + escalate_to_operator (gas accumulation risk)
+OVERCURRENT on motor (temp also high, vib normal) → reduce_motor_load, then
+  activate_motor_cooling if temp lags; emergency_shutdown only if temp is
+  still >115% of the real threshold after both.
+OVERCURRENT on motor (temp normal) → escalate_to_operator (electrical).
+OVERTEMPERATURE on motor → activate_motor_cooling first, reduce_motor_load too
+  if current is also elevated; emergency_shutdown if temp stays deep critical.
+EXCESSIVE_VIBRATION / BEARING_FAULT on motor or compressor → create_maintenance
+  _work_order always (counts as AUTO_RESOLVED per Rule 3/4); emergency_shutdown
+  first only if vibration is deep into critical or accelerating fast. Never
+  use reduce_motor_load alone for this — it doesn't fix a mechanical fault.
+INSULATION_FAULT → escalate_to_operator, never a remote action.
+HIGH_PRESSURE on pump → open_pressure_bypass_valve; emergency_shutdown if
+  pressure doesn't respond and stays well over threshold.
+LOW_FLOW_RATE / CAVITATION on pump → increase_pump_speed; if temp is ALSO
+  elevated with pressure/flow otherwise stable, add create_maintenance_work_order
+  (seal/bearing heat, per the pump matrix above) instead of just increasing speed.
+HIGH_PRESSURE / OIL_PRESSURE_LOW on compressor → HIGH_PRESSURE: engage_
+  compressor_unloader. OIL_PRESSURE_LOW: emergency_shutdown immediately.
+UNDERSPEED / BELT_SLIP on conveyor → if temp stays normal: adjust_conveyor_
+  tension alone. If temp is also climbing or current also spikes: add
+  create_maintenance_work_order (see conveyor matrix above).
+OVERPRESSURE / OVERTEMPERATURE on boiler → reduce_boiler_firing_rate;
+  emergency_shutdown if >130% of threshold.
+LOW_WATER_FLOW on boiler → open_boiler_feedwater_valve immediately, UNLESS
+  pressure is also high (see boiler matrix — that's blockage, not supply,
+  and needs create_maintenance_work_order instead).
+FLAME_FAILURE on boiler → emergency_shutdown + escalate_to_operator.
 
 ═══════════════════════════════════════════════════════════════
 CONFIDENCE SCORING
