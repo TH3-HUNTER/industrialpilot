@@ -133,8 +133,12 @@ async def export_csv():
 
     buf.seek(0)
     filename = f"industrialpilot_incidents_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+    # Prepend a UTF-8 BOM. Without it, Excel assumes the system's default (often
+    # Windows-1252) encoding and renders characters like "—" and "°" as garbled
+    # mojibake (e.g. "M-bM-^@M-^T") instead of the actual character.
+    csv_bytes = "\ufeff" + buf.getvalue()
     return StreamingResponse(
-        iter([buf.getvalue()]),
+        iter([csv_bytes]),
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
