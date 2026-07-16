@@ -1,21 +1,6 @@
 """
 IndustrialPilot — Qwen Agent
 Autonomous reasoning engine for factory incident response.
-
-This is the merged version: Qwen does the actual diagnosis and tool-calling —
-it reads the sensor history, reasons step by step, decides which remediation
-tool to use, and writes the incident narrative, same as a real agent should.
-What's different from earlier versions is what happens AFTER Qwen finishes:
-instead of trusting its self-reported CONFIDENCE number at face value, the
-code independently re-checks the actual sensor_changes against the real
-configured THRESHOLDS and computes a confidence number from real margin —
-the same formula from the deterministic engine, just used here to VERIFY
-Qwen's work rather than replace Qwen's reasoning.
-
-Escalation is decided from hard facts, not free text: if Qwen actually called
-escalate_to_operator OR emergency_shutdown, this is escalated — full stop.
-A shutdown is never auto-resolved, even if the shutdown itself "worked" —
-powered-down equipment always needs a human to authorize the restart.
 """
 import os
 import json
@@ -37,13 +22,10 @@ QWEN_BASE_URL     = os.getenv("QWEN_BASE_URL", "https://dashscope-intl.aliyuncs.
 QWEN_MODEL        = os.getenv("QWEN_MODEL", "qwen3.7-plus")
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.8"))
 
-LOW_ALERT_METRICS = {"flow_m3s", "speed_m_s"}  # for these, LOW is the dangerous direction
+LOW_ALERT_METRICS = {"flow_m3s", "speed_m_s"}
 
 
 def _margin_ratio(sensor_id: str, metric: str, value: float) -> float:
-    """How far a value sits from its real critical threshold, as a 0.0-1.0 ratio
-    on the SAFE side (0 = right at the edge, 1 = comfortably clear). Negative
-    means it's still on the unsafe side of the threshold."""
     thresh = THRESHOLDS.get(sensor_id, {}).get(metric)
     if thresh in (None, 0):
         return 0.0
@@ -55,6 +37,49 @@ def _margin_ratio(sensor_id: str, metric: str, value: float) -> float:
 def _scaled(lo: float, hi: float, ratio: float) -> float:
     ratio = max(0.0, min(1.0, ratio))
     return round(lo + (hi - lo) * ratio, 3)
+
+
+def _explain_decision(tool_results, action_tools_called, escalated, real_remediation_used,
+                       confidence, verify_note, ticket_only_actions, escalation_tools) -> str:
+    lines = []
+
+    if escalated:
+        trigger = next((t["tool"] for t in tool_results if t["tool"] in escalation_tools), None)
+        if trigger == "emergency_shutdown":
+            lines.append(
+                "ESCALATED because emergency_shutdown was called. A shutdown always means "
+                "a human must authorize the restart — this is never auto-resolved, even if "
+                "the shutdown itself was the correct, successful action."
+            )
+        elif trigger == "escalate_to_operator":
+            lines.append("ESCALATED because escalate_to_operator was called for a real (non-info) reason.")
+        else:
+            lines.append("ESCALATED (reason not tied to a specific tool call — check ACTIONS_TAKEN).")
+    else:
+        lines.append(
+            "NOT escalated — no emergency_shutdown or blocking escalate_to_operator call was made. "
+            "Any escalate_to_operator call you see below with [INFO] urgency is a non-blocking "
+            "advisory notification, not an escalation."
+        )
+
+    if real_remediation_used and not escalated:
+        lines.append(
+            f"CONFIDENCE ({confidence:.0%}) was calculated by the code from the actual sensor_changes "
+            f"compared against the real configured thresholds — not just Qwen's stated number. "
+            f"Verification detail: {verify_note}"
+        )
+    elif action_tools_called and all(t in ticket_only_actions for t in action_tools_called):
+        lines.append(
+            f"CONFIDENCE ({confidence:.0%}) is Qwen's own stated diagnostic number, used as-is. "
+            f"A maintenance-ticket-only resolution has no physical reading for the code to verify "
+            f"against — there's nothing to recalculate from, so this is trusted directly."
+        )
+    elif escalated:
+        lines.append(
+            f"CONFIDENCE ({confidence:.0%}) is Qwen's own stated diagnostic number, used as-is, "
+            f"since a human is already being brought in rather than the code verifying a remote fix."
+        )
+    return " ".join(lines)
 
 
 SYSTEM_PROMPT = """You are IndustrialPilot, an autonomous industrial AI agent integrated with
@@ -364,7 +389,6 @@ class IndustrialPilotAgent:
         alert_type= alert.get("alert_type", "UNKNOWN")
         severity  = alert.get("severity", "medium")
 
-        # ── persist alert ──────────────────────────────────────────
         insert_incident(alert_id, sensor_id, alert_type, severity, alert)
 
         await self._cb(websocket_callback, {
@@ -373,7 +397,6 @@ class IndustrialPilotAgent:
             "message": f"🔍 Analyzing {alert_id} — {alert_type} on {sensor_id} [{severity.upper()}]"
         })
 
-        # ── build initial prompt ───────────────────────────────────
         data = alert.get("data", {})
         user_message = f"""INCOMING FACTORY ALERT:
 Alert ID:   {alert_id}
@@ -395,7 +418,6 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
         tool_results = []
         final_text   = ""
 
-        # ── agentic loop — this IS Qwen doing the real reasoning ───
         try:
             for iteration in range(8):
                 await self._cb(websocket_callback, {
@@ -450,8 +472,6 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
 
                     result = await execute_tool(tool_name, tool_args)
                     tool_results.append({"tool": tool_name, "args": tool_args, "result": result})
-                    # NOTE: execute_tool() already logs this remediation once internally —
-                    # do not log it again here (that was the earlier "(x2)" duplication bug).
 
                     sensor_changes = result.get("sensor_changes", {})
                     await self._cb(websocket_callback, {
@@ -495,7 +515,6 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
             })
             return {"alert_id": alert_id, "status": "error", "error": error_msg}
 
-        # ── HARD ENFORCEMENT: never allow "resolved" with zero real actions ──
         DIAGNOSTIC_ONLY_TOOLS = {"get_sensor_history"}
         ESCALATION_TOOLS      = {"escalate_to_operator", "emergency_shutdown"}
         TICKET_ONLY_ACTIONS   = {"create_maintenance_work_order"}
@@ -521,21 +540,10 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
             tool_results.append({"tool": "escalate_to_operator", "args": {"alert_id": alert_id}, "result": forced_result})
             action_tools_called = ["escalate_to_operator"]
 
-        # ── parse final summary ────────────────────────────────────
         parsed = self._parse_summary(final_text)
 
-        # ── ESCALATION: a HARD FACT, not a text label. A real emergency_shutdown
-        # or escalate_to_operator call means escalated, always — per Rule 3, a
-        # shutdown is never auto-resolved even if it fixed the immediate danger,
-        # because powered-down equipment still needs a human to restart it. ──
         escalated = any(t["tool"] in ESCALATION_TOOLS for t in tool_results)
 
-        # ── CONFIDENCE: re-check Qwen's VERIFICATION claim against the real
-        # sensor_changes and real thresholds. If a real remediation tool was
-        # used and verified safe, the margin-based number is authoritative —
-        # more reliable than trusting Qwen's self-reported number outright.
-        # If nothing remote was changed (ticket/escalation only), Qwen's own
-        # Step-1 diagnostic number is used as-is, since there's nothing to verify.
         real_remediation_used = any(
             t not in DIAGNOSTIC_ONLY_TOOLS and t not in TICKET_ONLY_ACTIONS and t not in ESCALATION_TOOLS
             for t in action_tools_called
@@ -550,7 +558,7 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
                 for metric, delta in changes.items():
                     to_val = delta.get("to") if isinstance(delta, dict) else None
                     if to_val is not None:
-                        changed_final[metric] = to_val  # last write wins
+                        changed_final[metric] = to_val
 
             thresh = THRESHOLDS.get(sensor_id, {})
             ratios = [_margin_ratio(sensor_id, m, v) for m, v in changed_final.items() if m in thresh]
@@ -559,8 +567,6 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
                 if worst >= 0:
                     confidence = _scaled(0.86, 0.97, worst)
                 else:
-                    # The fix Qwen applied didn't actually verify — this is a real
-                    # safety net, not just trusting the model said it worked.
                     confidence = _scaled(0.35, 0.60, max(0.0, 1 - abs(worst)))
                     escalated = True
                     result = await execute_tool("escalate_to_operator", {
@@ -574,9 +580,8 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
                     tool_results.append({"tool": "escalate_to_operator", "args": {"alert_id": alert_id}, "result": result})
                     action_tools_called.append("escalate_to_operator")
 
-        # ── ADVISORY: fully-handled cases (real fix verified, or mechanical
-        # ticket with no shutdown) still get a low-priority FYI notification,
-        # without requiring a human decision or flipping the status. ──
+        primary_actions = list(action_tools_called)
+
         if not escalated and action_tools_called:
             is_ticket_only = all(t in TICKET_ONLY_ACTIONS for t in action_tools_called)
             note = (
@@ -594,16 +599,26 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
             tool_results.append({"tool": "escalate_to_operator", "args": {"alert_id": alert_id}, "result": advisory})
             action_tools_called.append("escalate_to_operator (advisory)")
 
+        decision_explanation = _explain_decision(
+            tool_results, primary_actions, escalated, real_remediation_used,
+            confidence, verify_note, TICKET_ONLY_ACTIONS, ESCALATION_TOOLS
+        )
+        await self._cb(websocket_callback, {
+            "type": "agent_reasoning",
+            "alert_id": alert_id,
+            "message": f"📋 Decision: {decision_explanation}"
+        })
+
         log_decision(
             alert_id=alert_id,
-            reasoning=final_text,
+            reasoning=final_text + "\n\n[DECISION EXPLANATION]\n" + decision_explanation,
             confidence=confidence,
             action_taken=json.dumps(action_tools_called),
             action_result={"tools": tool_results, "summary": parsed},
             escalated=escalated
         )
 
-        report = self._build_report(alert_id, alert, tool_results, final_text, parsed, confidence, escalated)
+        report = self._build_report(alert_id, alert, tool_results, final_text, parsed, confidence, escalated, decision_explanation)
         save_report(alert_id, report)
         update_incident_status(alert_id, "escalated" if escalated else "resolved")
 
@@ -630,7 +645,6 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
             "summary":      parsed,
         }
 
-    # ── helpers ────────────────────────────────────────────────────
     async def _cb(self, fn, data):
         if fn:
             try:
@@ -668,7 +682,7 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
                 result["next_steps"] = line[idx + len("NEXT_STEPS:"):].strip()
         return result
 
-    def _build_report(self, alert_id, alert, tool_results, reasoning, summary, confidence, escalated) -> str:
+    def _build_report(self, alert_id, alert, tool_results, reasoning, summary, confidence, escalated, decision_explanation="") -> str:
         seen = {}
         for t in tool_results:
             key = (t['tool'], t['result'].get('message', 'done'))
@@ -695,6 +709,9 @@ Begin diagnosis. First call get_sensor_history for {sensor_id}, then decide and 
 
 ## Agent Confidence (code-verified where a real fix was applied)
 {confidence:.0%}
+
+## Why This Decision (auto-generated, not from Qwen — the actual mechanics)
+{decision_explanation or 'N/A'}
 
 ## Actions Taken
 {tools_used or 'None'}
